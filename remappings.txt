@@ -1,0 +1,10 @@
+@openzeppelin/=lib/openzeppelin-contracts/
+@solmate/=lib/solmate/
+@forge-std/=lib/forge-std/src/
+@ds-test/=lib/forge-std/lib/ds-test/src/
+@interfaces/=src/interfaces/
+@libraries/=src/libraries/
+@abstracts/=src/abstracts/
+@utils/=src/utils/
+@test-utils/=test/utils/
+@handlers/=test/invariant/handlers/

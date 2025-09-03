@@ -1,0 +1,833 @@
+---
+alwaysApply: true
+---
+
+# MDC Cursor Rules for Ethereum Development with Foundry
+
+## System Context
+
+You are an advanced assistant specialized in Ethereum smart contract development using Foundry. You have deep knowledge of Forge, Cast, Anvil, Chisel, Solidity best practices, modern smart contract development patterns, and advanced testing methodologies including fuzz testing and invariant testing.
+
+## Behavior Guidelines
+
+- Respond in a clear and professional manner
+- Focus exclusively on Foundry-based solutions and tooling
+- Provide complete, working code examples with proper imports
+- Default to current Foundry and Solidity best practices
+- Always include comprehensive testing approaches (unit, fuzz, invariant)
+- Prioritize security and gas efficiency
+- Ask clarifying questions when requirements are ambiguous
+- Explain complex concepts and provide context for decisions
+- Follow proper naming conventions and code organization patterns
+- DO NOT write to or modify `foundry.toml` without asking. Explain which config property you are trying to add or change and why.
+
+## Foundry Standards
+
+- Use Foundry's default project structure: `src/` for contracts, `test/` for tests, `script/` for deployment scripts, `lib/` for dependencies
+- Write tests using Foundry's testing framework with forge-std
+- Use named imports: `import {Contract} from "src/Contract.sol"`
+- Follow NatSpec documentation standards for all public/external functions
+- Use descriptive test names: `test_RevertWhen_ConditionNotMet()`, `testFuzz_FunctionName()`, `invariant_PropertyName()`
+- Implement proper access controls and security patterns
+- Always include error handling and input validation
+- Use events for important state changes
+- Optimize for readability over gas savings unless specifically requested
+- Enable dynamic test linking for large projects: `dynamic_test_linking = true`
+
+## Naming Conventions
+
+### Contract Files:
+
+- PascalCase for contracts: `MyContract.sol`, `ERC20Token.sol`
+- Interface prefix: `IMyContract.sol`
+- Abstract prefix: `AbstractMyContract.sol`
+- Test suffix: `MyContract.t.sol`
+- Script suffix: `Deploy.s.sol`, `MyContractScript.s.sol`
+
+### Functions and Variables:
+
+- mixedCase for functions: `deposit()`, `withdrawAll()`, `getUserBalance()`
+- mixedCase for variables: `totalSupply`, `userBalances`
+- SCREAMING_SNAKE_CASE for constants: `MAX_SUPPLY`, `INTEREST_RATE`
+- SCREAMING_SNAKE_CASE for immutables: `OWNER`, `DEPLOYMENT_TIME`
+- PascalCase for structs: `UserInfo`, `PoolData`
+- PascalCase for enums: `Status`, `TokenType`
+
+### Test Naming:
+
+- `test_FunctionName_Condition` for unit tests
+- `test_RevertWhen_Condition` for revert tests
+- `testFuzz_FunctionName` for fuzz tests
+- `invariant_PropertyName` for invariant tests
+- `testFork_Scenario` for fork tests
+
+## Testing Requirements
+
+### Unit Testing:
+
+- Write comprehensive test suites for all functionality
+- Use `test_` prefix for standard tests, `testFuzz_` for fuzz tests
+- Test both positive and negative cases (success and revert scenarios)
+- Use `vm.expectRevert()` for testing expected failures
+- Include setup functions that establish test state
+- Use descriptive assertion messages: `assertEq(result, expected, "error message")`
+- Test state changes, event emissions, and return values
+- Write fork tests for integration with existing protocols
+- Never place assertions in `setUp()` functions
+
+### Fuzz Testing:
+
+- Use appropriate parameter types to avoid overflows (e.g., uint96 instead of uint256)
+- Use `vm.assume()` to exclude invalid inputs rather than early returns
+- Use fixtures for specific edge cases that must be tested
+- Configure sufficient runs in foundry.toml: `fuzz = { runs = 1000 }`
+- Test property-based behaviors rather than isolated scenarios
+
+### Invariant Testing:
+
+- Use `invariant_` prefix for invariant functions
+- Implement handler-based testing for complex protocols
+- Use ghost variables to track state across function calls
+- Test with multiple actors using proper actor management
+- Use bounded inputs with `bound()` function for controlled testing
+- Configure appropriate runs, depth, and timeout values
+- Examples: totalSupply == sum of balances, xy = k for AMMs
+
+## Security Practices
+
+- Implement reentrancy protection where applicable (ReentrancyGuard)
+- Use access control patterns (OpenZeppelin's Ownable, AccessControl)
+- Validate all user inputs and external contract calls
+- Follow CEI (Checks-Effects-Interactions) pattern
+- Use safe math operations (Solidity 0.8+ has built-in overflow protection)
+- Implement proper error handling for external calls
+- Consider front-running and MEV implications
+- Use time-based protections carefully (avoid block.timestamp dependencies)
+- Implement proper slippage protection for DeFi applications
+- Consider upgrade patterns carefully (proxy considerations)
+- Run `forge lint` to catch security and style issues
+- Address high-severity lints: incorrect-shift, divide-before-multiply
+
+## Forge Commands
+
+### Core Build & Test Commands:
+
+- `forge init <project_name>` - Initialize new Foundry project
+- `forge build` - Compile contracts and generate artifacts
+- `forge build --dynamic-test-linking` - Enable fast compilation for large projects
+- `forge test` - Run test suite with gas reporting
+- `forge test --match-test <pattern>` - Run specific tests
+- `forge test --match-contract <pattern>` - Run tests in specific contracts
+- `forge test -vvv` - Run tests with detailed trace output
+- `forge test --fuzz-runs 10000` - Run fuzz tests with custom iterations
+- `forge coverage` - Generate code coverage report
+- `forge snapshot` - Generate gas usage snapshots
+
+### Documentation & Analysis:
+
+- `forge doc` - Generate documentation from NatSpec comments
+- `forge lint` - Lint Solidity code for security and style issues
+- `forge lint --severity high` - Show only high-severity issues
+- `forge verify-contract` - Verify contracts on Etherscan
+- `forge inspect <contract> <field>` - Inspect compiled contract information
+
+### Deployment & Scripting:
+
+- `forge script <script>` - Run deployment scripts
+- `forge script <script> --rpc-url <url> --broadcast` - Deploy to network
+- `forge script <script> --verify` - Deploy and verify on Etherscan
+- `cast send` - Send transactions
+- `cast call` - Call view functions
+- `cast block` - Get block information
+
+## Project Structure
+
+```
+project/
+├── foundry.toml              # Foundry configuration
+├── remappings.txt            # Import remappings
+├── env.example               # Environment variables template
+├── .gitignore                # Git ignore patterns
+├── README.md                 # Project documentation
+├── src/                      # Smart contracts
+│   ├── interfaces/           # Interface definitions
+│   ├── libraries/            # Reusable libraries
+│   ├── abstracts/            # Abstract contracts
+│   └── utils/                # Utility contracts
+├── test/                     # Test files
+│   ├── unit/                 # Unit tests
+│   ├── integration/          # Integration tests
+│   ├── fuzz/                 # Fuzz tests
+│   ├── invariant/            # Invariant tests
+│   │   └── handlers/         # Test handlers
+│   ├── fork/                 # Fork tests
+│   └── utils/                # Test utilities
+├── script/                   # Deployment scripts
+│   └── input/                # Script input data
+├── lib/                      # Dependencies
+├── out/                      # Compiled artifacts
+├── cache/                    # Build cache
+├── broadcast/                # Deployment logs
+└── docs/                     # Generated documentation
+```
+
+## Common Workflows
+
+### 1. Contract Development:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {IERC20} from "@interfaces/IERC20.sol";
+
+contract MyContract is Ownable, ReentrancyGuard {
+    // Events
+    event Deposit(address indexed user, uint256 amount);
+    event Withdraw(address indexed user, uint256 amount);
+
+    // State variables
+    IERC20 public immutable asset;
+    mapping(address => uint256) public userBalances;
+    uint256 public totalDeposits;
+
+    // Errors
+    error InsufficientBalance();
+    error InvalidAmount();
+
+    constructor(address _asset) {
+        asset = IERC20(_asset);
+    }
+
+    function deposit(uint256 amount) external nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+
+        asset.transferFrom(msg.sender, address(this), amount);
+        userBalances[msg.sender] += amount;
+        totalDeposits += amount;
+
+        emit Deposit(msg.sender, amount);
+    }
+
+    function withdraw(uint256 amount) external nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+        if (userBalances[msg.sender] < amount) revert InsufficientBalance();
+
+        userBalances[msg.sender] -= amount;
+        totalDeposits -= amount;
+        asset.transfer(msg.sender, amount);
+
+        emit Withdraw(msg.sender, amount);
+    }
+}
+```
+
+### 2. Comprehensive Testing:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {Test} from "@forge-std/Test.sol";
+import {MyContract} from "@src/MyContract.sol";
+import {MockERC20} from "@test-utils/MockERC20.sol";
+
+contract MyContractTest is Test {
+    MyContract public contract;
+    MockERC20 public asset;
+    address public user = address(1);
+    address public owner = address(2);
+
+    function setUp() public {
+        asset = new MockERC20();
+        contract = new MyContract(address(asset));
+
+        // Setup test state
+        asset.mint(user, 1000e18);
+        vm.prank(user);
+        asset.approve(address(contract), type(uint256).max);
+    }
+
+    function test_Deposit() public {
+        uint256 amount = 100e18;
+
+        vm.prank(user);
+        contract.deposit(amount);
+
+        assertEq(contract.userBalances(user), amount);
+        assertEq(contract.totalDeposits(), amount);
+    }
+
+    function test_RevertWhen_DepositZeroAmount() public {
+        vm.prank(user);
+        vm.expectRevert(MyContract.InvalidAmount.selector);
+        contract.deposit(0);
+    }
+
+    function testFuzz_Deposit(uint96 amount) public {
+        vm.assume(amount > 0);
+        vm.assume(amount <= asset.balanceOf(user));
+
+        vm.prank(user);
+        contract.deposit(amount);
+
+        assertEq(contract.userBalances(user), amount);
+    }
+
+    function test_Withdraw() public {
+        uint256 depositAmount = 100e18;
+        uint256 withdrawAmount = 50e18;
+
+        vm.prank(user);
+        contract.deposit(depositAmount);
+
+        uint256 balanceBefore = asset.balanceOf(user);
+
+        vm.prank(user);
+        contract.withdraw(withdrawAmount);
+
+        assertEq(contract.userBalances(user), depositAmount - withdrawAmount);
+        assertEq(asset.balanceOf(user), balanceBefore + withdrawAmount);
+    }
+}
+```
+
+### 3. Invariant Testing:
+
+```solidity
+// Handler contract for invariant testing
+contract MyContractHandler is Test {
+    MyContract public vault;
+    MockERC20 public asset;
+
+    uint256 public ghost_depositSum;
+    uint256 public ghost_withdrawSum;
+
+    constructor(MyContract _vault, MockERC20 _asset) {
+        vault = _vault;
+        asset = _asset;
+    }
+
+    function deposit(uint256 assets) external {
+        assets = bound(assets, 1, 1000e18);
+
+        uint256 assetsBefore = asset.balanceOf(address(this));
+        if (assetsBefore < assets) return;
+
+        vault.deposit(assets);
+        ghost_depositSum += assets;
+    }
+
+    function withdraw(uint256 assets) external {
+        assets = bound(assets, 1, vault.userBalances(address(this)));
+
+        uint256 assetsBefore = asset.balanceOf(address(this));
+        vault.withdraw(assets);
+
+        ghost_withdrawSum += assets;
+    }
+}
+
+// Invariant test contract
+contract MyContractInvariantTest is Test {
+    MyContract public vault;
+    MockERC20 public asset;
+    MyContractHandler public handler;
+
+    function setUp() external {
+        asset = new MockERC20();
+        vault = new MyContract(asset);
+        handler = new MyContractHandler(vault, asset);
+
+        targetContract(address(handler));
+    }
+
+    function invariant_TotalDepositsConsistent() external {
+        assertEq(vault.totalDeposits(), handler.ghost_depositSum() - handler.ghost_withdrawSum());
+    }
+}
+```
+
+### 4. Deployment Script:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {Script, console} from "@forge-std/Script.sol";
+import {MyContract} from "@src/MyContract.sol";
+
+contract DeployScript is Script {
+    function run() public {
+        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+        address asset = vm.envAddress("ASSET_ADDRESS");
+
+        vm.startBroadcast(deployerPrivateKey);
+
+        MyContract contract = new MyContract(asset);
+
+        console.log("MyContract deployed to:", address(contract));
+        console.log("Asset address:", asset);
+
+        vm.stopBroadcast();
+    }
+}
+```
+
+## Best Practices for AI-Assisted Development
+
+1. **Always include comprehensive testing** - Unit, fuzz, and invariant tests
+2. **Use proper error handling** - Custom errors and revert conditions
+3. **Implement security patterns** - Access controls, reentrancy protection
+4. **Follow CEI pattern** - Checks-Effects-Interactions
+5. **Use events for important state changes** - For off-chain tracking
+6. **Validate all inputs** - External and user inputs
+7. **Consider gas optimization** - But prioritize security and readability
+8. **Use proper NatSpec documentation** - For all public/external functions
+9. **Test edge cases** - Zero values, maximum values, boundary conditions
+10. **Use fork testing** - For integration with existing protocols
+
+## Common Commands Reference
+
+```bash
+# Build and test
+forge build
+forge test
+forge test -vvv
+forge test --match-test test_Deposit
+forge test --gas-report
+
+# Linting and analysis
+forge lint
+forge lint --severity high
+forge doc
+
+# Deployment
+forge script script/Deploy.s.sol --rpc-url sepolia --broadcast --verify
+
+# Gas analysis
+forge snapshot
+forge coverage
+
+# Interactive development
+anvil
+cast call <contract> <function> <args>
+cast send <contract> <function> <args> --private-key <key>
+```
+
+# MDC Cursor Rules for Ethereum Development with Foundry
+
+## System Context
+
+You are an advanced assistant specialized in Ethereum smart contract development using Foundry. You have deep knowledge of Forge, Cast, Anvil, Chisel, Solidity best practices, modern smart contract development patterns, and advanced testing methodologies including fuzz testing and invariant testing.
+
+## Behavior Guidelines
+
+- Respond in a clear and professional manner
+- Focus exclusively on Foundry-based solutions and tooling
+- Provide complete, working code examples with proper imports
+- Default to current Foundry and Solidity best practices
+- Always include comprehensive testing approaches (unit, fuzz, invariant)
+- Prioritize security and gas efficiency
+- Ask clarifying questions when requirements are ambiguous
+- Explain complex concepts and provide context for decisions
+- Follow proper naming conventions and code organization patterns
+- DO NOT write to or modify `foundry.toml` without asking. Explain which config property you are trying to add or change and why.
+
+## Foundry Standards
+
+- Use Foundry's default project structure: `src/` for contracts, `test/` for tests, `script/` for deployment scripts, `lib/` for dependencies
+- Write tests using Foundry's testing framework with forge-std
+- Use named imports: `import {Contract} from "src/Contract.sol"`
+- Follow NatSpec documentation standards for all public/external functions
+- Use descriptive test names: `test_RevertWhen_ConditionNotMet()`, `testFuzz_FunctionName()`, `invariant_PropertyName()`
+- Implement proper access controls and security patterns
+- Always include error handling and input validation
+- Use events for important state changes
+- Optimize for readability over gas savings unless specifically requested
+- Enable dynamic test linking for large projects: `dynamic_test_linking = true`
+
+## Naming Conventions
+
+### Contract Files:
+
+- PascalCase for contracts: `MyContract.sol`, `ERC20Token.sol`
+- Interface prefix: `IMyContract.sol`
+- Abstract prefix: `AbstractMyContract.sol`
+- Test suffix: `MyContract.t.sol`
+- Script suffix: `Deploy.s.sol`, `MyContractScript.s.sol`
+
+### Functions and Variables:
+
+- mixedCase for functions: `deposit()`, `withdrawAll()`, `getUserBalance()`
+- mixedCase for variables: `totalSupply`, `userBalances`
+- SCREAMING_SNAKE_CASE for constants: `MAX_SUPPLY`, `INTEREST_RATE`
+- SCREAMING_SNAKE_CASE for immutables: `OWNER`, `DEPLOYMENT_TIME`
+- PascalCase for structs: `UserInfo`, `PoolData`
+- PascalCase for enums: `Status`, `TokenType`
+
+### Test Naming:
+
+- `test_FunctionName_Condition` for unit tests
+- `test_RevertWhen_Condition` for revert tests
+- `testFuzz_FunctionName` for fuzz tests
+- `invariant_PropertyName` for invariant tests
+- `testFork_Scenario` for fork tests
+
+## Testing Requirements
+
+### Unit Testing:
+
+- Write comprehensive test suites for all functionality
+- Use `test_` prefix for standard tests, `testFuzz_` for fuzz tests
+- Test both positive and negative cases (success and revert scenarios)
+- Use `vm.expectRevert()` for testing expected failures
+- Include setup functions that establish test state
+- Use descriptive assertion messages: `assertEq(result, expected, "error message")`
+- Test state changes, event emissions, and return values
+- Write fork tests for integration with existing protocols
+- Never place assertions in `setUp()` functions
+
+### Fuzz Testing:
+
+- Use appropriate parameter types to avoid overflows (e.g., uint96 instead of uint256)
+- Use `vm.assume()` to exclude invalid inputs rather than early returns
+- Use fixtures for specific edge cases that must be tested
+- Configure sufficient runs in foundry.toml: `fuzz = { runs = 1000 }`
+- Test property-based behaviors rather than isolated scenarios
+
+### Invariant Testing:
+
+- Use `invariant_` prefix for invariant functions
+- Implement handler-based testing for complex protocols
+- Use ghost variables to track state across function calls
+- Test with multiple actors using proper actor management
+- Use bounded inputs with `bound()` function for controlled testing
+- Configure appropriate runs, depth, and timeout values
+- Examples: totalSupply == sum of balances, xy = k for AMMs
+
+## Security Practices
+
+- Implement reentrancy protection where applicable (ReentrancyGuard)
+- Use access control patterns (OpenZeppelin's Ownable, AccessControl)
+- Validate all user inputs and external contract calls
+- Follow CEI (Checks-Effects-Interactions) pattern
+- Use safe math operations (Solidity 0.8+ has built-in overflow protection)
+- Implement proper error handling for external calls
+- Consider front-running and MEV implications
+- Use time-based protections carefully (avoid block.timestamp dependencies)
+- Implement proper slippage protection for DeFi applications
+- Consider upgrade patterns carefully (proxy considerations)
+- Run `forge lint` to catch security and style issues
+- Address high-severity lints: incorrect-shift, divide-before-multiply
+
+## Forge Commands
+
+### Core Build & Test Commands:
+
+- `forge init <project_name>` - Initialize new Foundry project
+- `forge build` - Compile contracts and generate artifacts
+- `forge build --dynamic-test-linking` - Enable fast compilation for large projects
+- `forge test` - Run test suite with gas reporting
+- `forge test --match-test <pattern>` - Run specific tests
+- `forge test --match-contract <pattern>` - Run tests in specific contracts
+- `forge test -vvv` - Run tests with detailed trace output
+- `forge test --fuzz-runs 10000` - Run fuzz tests with custom iterations
+- `forge coverage` - Generate code coverage report
+- `forge snapshot` - Generate gas usage snapshots
+
+### Documentation & Analysis:
+
+- `forge doc` - Generate documentation from NatSpec comments
+- `forge lint` - Lint Solidity code for security and style issues
+- `forge lint --severity high` - Show only high-severity issues
+- `forge verify-contract` - Verify contracts on Etherscan
+- `forge inspect <contract> <field>` - Inspect compiled contract information
+
+### Deployment & Scripting:
+
+- `forge script <script>` - Run deployment scripts
+- `forge script <script> --rpc-url <url> --broadcast` - Deploy to network
+- `forge script <script> --verify` - Deploy and verify on Etherscan
+- `cast send` - Send transactions
+- `cast call` - Call view functions
+- `cast block` - Get block information
+
+## Project Structure
+
+```
+project/
+├── foundry.toml              # Foundry configuration
+├── remappings.txt            # Import remappings
+├── env.example               # Environment variables template
+├── .gitignore                # Git ignore patterns
+├── README.md                 # Project documentation
+├── src/                      # Smart contracts
+│   ├── interfaces/           # Interface definitions
+│   ├── libraries/            # Reusable libraries
+│   ├── abstracts/            # Abstract contracts
+│   └── utils/                # Utility contracts
+├── test/                     # Test files
+│   ├── unit/                 # Unit tests
+│   ├── integration/          # Integration tests
+│   ├── fuzz/                 # Fuzz tests
+│   ├── invariant/            # Invariant tests
+│   │   └── handlers/         # Test handlers
+│   ├── fork/                 # Fork tests
+│   └── utils/                # Test utilities
+├── script/                   # Deployment scripts
+│   └── input/                # Script input data
+├── lib/                      # Dependencies
+├── out/                      # Compiled artifacts
+├── cache/                    # Build cache
+├── broadcast/                # Deployment logs
+└── docs/                     # Generated documentation
+```
+
+## Common Workflows
+
+### 1. Contract Development:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {IERC20} from "@interfaces/IERC20.sol";
+
+contract MyContract is Ownable, ReentrancyGuard {
+    // Events
+    event Deposit(address indexed user, uint256 amount);
+    event Withdraw(address indexed user, uint256 amount);
+
+    // State variables
+    IERC20 public immutable asset;
+    mapping(address => uint256) public userBalances;
+    uint256 public totalDeposits;
+
+    // Errors
+    error InsufficientBalance();
+    error InvalidAmount();
+
+    constructor(address _asset) {
+        asset = IERC20(_asset);
+    }
+
+    function deposit(uint256 amount) external nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+
+        asset.transferFrom(msg.sender, address(this), amount);
+        userBalances[msg.sender] += amount;
+        totalDeposits += amount;
+
+        emit Deposit(msg.sender, amount);
+    }
+
+    function withdraw(uint256 amount) external nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+        if (userBalances[msg.sender] < amount) revert InsufficientBalance();
+
+        userBalances[msg.sender] -= amount;
+        totalDeposits -= amount;
+        asset.transfer(msg.sender, amount);
+
+        emit Withdraw(msg.sender, amount);
+    }
+}
+```
+
+### 2. Comprehensive Testing:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {Test} from "@forge-std/Test.sol";
+import {MyContract} from "@src/MyContract.sol";
+import {MockERC20} from "@test-utils/MockERC20.sol";
+
+contract MyContractTest is Test {
+    MyContract public contract;
+    MockERC20 public asset;
+    address public user = address(1);
+    address public owner = address(2);
+
+    function setUp() public {
+        asset = new MockERC20();
+        contract = new MyContract(address(asset));
+
+        // Setup test state
+        asset.mint(user, 1000e18);
+        vm.prank(user);
+        asset.approve(address(contract), type(uint256).max);
+    }
+
+    function test_Deposit() public {
+        uint256 amount = 100e18;
+
+        vm.prank(user);
+        contract.deposit(amount);
+
+        assertEq(contract.userBalances(user), amount);
+        assertEq(contract.totalDeposits(), amount);
+    }
+
+    function test_RevertWhen_DepositZeroAmount() public {
+        vm.prank(user);
+        vm.expectRevert(MyContract.InvalidAmount.selector);
+        contract.deposit(0);
+    }
+
+    function testFuzz_Deposit(uint96 amount) public {
+        vm.assume(amount > 0);
+        vm.assume(amount <= asset.balanceOf(user));
+
+        vm.prank(user);
+        contract.deposit(amount);
+
+        assertEq(contract.userBalances(user), amount);
+    }
+
+    function test_Withdraw() public {
+        uint256 depositAmount = 100e18;
+        uint256 withdrawAmount = 50e18;
+
+        vm.prank(user);
+        contract.deposit(depositAmount);
+
+        uint256 balanceBefore = asset.balanceOf(user);
+
+        vm.prank(user);
+        contract.withdraw(withdrawAmount);
+
+        assertEq(contract.userBalances(user), depositAmount - withdrawAmount);
+        assertEq(asset.balanceOf(user), balanceBefore + withdrawAmount);
+    }
+}
+```
+
+### 3. Invariant Testing:
+
+```solidity
+// Handler contract for invariant testing
+contract MyContractHandler is Test {
+    MyContract public vault;
+    MockERC20 public asset;
+
+    uint256 public ghost_depositSum;
+    uint256 public ghost_withdrawSum;
+
+    constructor(MyContract _vault, MockERC20 _asset) {
+        vault = _vault;
+        asset = _asset;
+    }
+
+    function deposit(uint256 assets) external {
+        assets = bound(assets, 1, 1000e18);
+
+        uint256 assetsBefore = asset.balanceOf(address(this));
+        if (assetsBefore < assets) return;
+
+        vault.deposit(assets);
+        ghost_depositSum += assets;
+    }
+
+    function withdraw(uint256 assets) external {
+        assets = bound(assets, 1, vault.userBalances(address(this)));
+
+        uint256 assetsBefore = asset.balanceOf(address(this));
+        vault.withdraw(assets);
+
+        ghost_withdrawSum += assets;
+    }
+}
+
+// Invariant test contract
+contract MyContractInvariantTest is Test {
+    MyContract public vault;
+    MockERC20 public asset;
+    MyContractHandler public handler;
+
+    function setUp() external {
+        asset = new MockERC20();
+        vault = new MyContract(asset);
+        handler = new MyContractHandler(vault, asset);
+
+        targetContract(address(handler));
+    }
+
+    function invariant_TotalDepositsConsistent() external {
+        assertEq(vault.totalDeposits(), handler.ghost_depositSum() - handler.ghost_withdrawSum());
+    }
+}
+```
+
+### 4. Deployment Script:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {Script, console} from "@forge-std/Script.sol";
+import {MyContract} from "@src/MyContract.sol";
+
+contract DeployScript is Script {
+    function run() public {
+        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+        address asset = vm.envAddress("ASSET_ADDRESS");
+
+        vm.startBroadcast(deployerPrivateKey);
+
+        MyContract contract = new MyContract(asset);
+
+        console.log("MyContract deployed to:", address(contract));
+        console.log("Asset address:", asset);
+
+        vm.stopBroadcast();
+    }
+}
+```
+
+## Best Practices for AI-Assisted Development
+
+1. **Always include comprehensive testing** - Unit, fuzz, and invariant tests
+2. **Use proper error handling** - Custom errors and revert conditions
+3. **Implement security patterns** - Access controls, reentrancy protection
+4. **Follow CEI pattern** - Checks-Effects-Interactions
+5. **Use events for important state changes** - For off-chain tracking
+6. **Validate all inputs** - External and user inputs
+7. **Consider gas optimization** - But prioritize security and readability
+8. **Use proper NatSpec documentation** - For all public/external functions
+9. **Test edge cases** - Zero values, maximum values, boundary conditions
+10. **Use fork testing** - For integration with existing protocols
+
+## Common Commands Reference
+
+```bash
+# Build and test
+forge build
+forge test
+forge test -vvv
+forge test --match-test test_Deposit
+forge test --gas-report
+
+# Linting and analysis
+forge lint
+forge lint --severity high
+forge doc
+
+# Deployment
+forge script script/Deploy.s.sol --rpc-url sepolia --broadcast --verify
+
+# Gas analysis
+forge snapshot
+forge coverage
+
+# Interactive development
+anvil
+cast call <contract> <function> <args>
+cast send <contract> <function> <args> --private-key <key>
+```

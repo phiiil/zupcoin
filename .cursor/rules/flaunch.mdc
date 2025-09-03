@@ -1,0 +1,4958 @@
+---
+alwaysApply: false
+---
+
+# Flaunch SDK
+
+[![npm version](https://img.shields.io/npm/v/@flaunch/sdk.svg)](https://npmjs.com/package/@flaunch/sdk)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+A TypeScript SDK for seamless interaction with the Flaunch protocol and Uniswap V4.
+
+![Flaunch Header](https://raw.githubusercontent.com/flayerlabs/flaunch-sdk/refs/heads/master/.github/flaunch-header.png)
+
+_Note: Add this `llms-full.txt` file into Cursor IDE / LLMs to provide context about using the Flaunch SDK: [llms-full.txt](https://raw.githubusercontent.com/flayerlabs/flaunch-sdk/refs/heads/master/llms-full.txt)_
+
+## Features
+
+- 🚀 Flaunch new memecoins
+- 💱 Buy and sell memecoins via Uniswap V4 hooks
+- 🏗️ Build your own token launchpads on top of the flaunch protocol
+- 📊 Read functions for token and pool data
+- 🔒 Built-in Permit2 support for gasless approvals
+- 🔵 Works on Base and Base Sepolia networks
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Usage](#usage)
+  - [Read Operations](#read-operations-with-viem)
+  - [Write Operations](#write-operations-with-viem--wagmi)
+  - [Selling with Permit2](#selling-with-permit2)
+  - [Flaunching a Memecoin](#flaunching-a-memecoin)
+    - [How to generate Base64Image from file upload](#how-to-generate-base64image-from-user-uploaded-file)
+  - [Flaunch with Address Fee Splits](#flaunch-with-address-fee-splits)
+  - [Advanced Integration: Revenue Sharing with RevenueManager](#advanced-integration-revenue-sharing-with-revenuemanager)
+  - [All SDK functions](#all-sdk-functions)
+  - [React Hooks](#react-hooks)
+- [Flaunch Docs](#flaunch-reference)
+
+## Installation
+
+Using pnpm (recommended):
+
+```bash
+pnpm add @flaunch/sdk
+```
+
+Using npm:
+
+```bash
+npm install @flaunch/sdk
+```
+
+Using yarn:
+
+```bash
+yarn add @flaunch/sdk
+```
+
+## Quick Start
+
+Here's a simple example to get started with reading token metadata:
+
+```ts
+import { createFlaunch } from "@flaunch/sdk";
+import { createPublicClient, http } from "viem";
+import { base } from "viem/chains";
+
+const publicClient = createPublicClient({
+  chain: base,
+  transport: http(),
+});
+
+const flaunchRead = createFlaunch({ publicClient });
+const { symbol, name, image } = await flaunchRead.getCoinMetadata(coinAddress);
+// returns: {symbol: "TEST", name: "Test", image: "https://<IMAGE_URL>"}
+```
+
+## Usage
+
+The SDK provides two types of operations:
+
+1. Read operations: Only require a `publicClient`
+2. Write operations: Require both `publicClient` and `walletClient`
+
+### Read Operations (with Viem)
+
+```ts
+import { createFlaunch } from "@flaunch/sdk";
+import { createPublicClient, http } from "viem";
+import { base } from "viem/chains";
+
+const publicClient = createPublicClient({
+  chain: base,
+  transport: http("<RPC_URL>"), // "<RPC_URL>" is optional, defaults to public RPC
+});
+
+const flaunchRead = createFlaunch({ publicClient });
+
+// Read token metadata
+const { symbol, name, image } = await flaunchRead.getCoinMetadata(coinAddress);
+// returns: {symbol: "TEST", name: "Test", image: "https://<IMAGE_URL>"}
+```
+
+### Write Operations (with Viem + Wagmi)
+
+For write operations, you'll need both Viem and Wagmi. Here's how to set it up in a React component:
+
+```ts
+import { createFlaunch, ReadWriteFlaunchSDK } from "@flaunch/sdk";
+import { base } from "viem/chains";
+import { useWalletClient } from "wagmi";
+import { useMemo } from "react";
+
+// ... your React component ...
+
+const publicClient = createPublicClient({
+  chain: base,
+  transport: http("<RPC_URL>"), // "<RPC_URL>" is optional, defaults to public RPC
+});
+const { data: walletClient } = useWalletClient();
+
+const flaunchWrite = useMemo(() => {
+  if (!publicClient && !walletClient) return null;
+
+  return createFlaunch({
+    publicClient,
+    walletClient,
+  }) as ReadWriteFlaunchSDK;
+}, [publicClient, walletClient]);
+
+// Execute a buy transaction
+const buyTokens = async () => {
+  const hash = await flaunchWrite.buyCoin({
+    coinAddress,
+    slippagePercent: 5,
+    swapType: "EXACT_IN",
+    amountIn: parseEther("0.1"),
+  });
+
+  // Wait for confirmation
+  const receipt = await flaunchWrite.drift.waitForTransaction({ hash });
+  console.log(receipt.status === "success" ? "Success" : "Failed");
+};
+```
+
+### Selling with Permit2
+
+Permit2 enables gasless token approvals. Here's how to implement token selling with Permit2:
+
+```ts
+import { useSignTypedData } from "wagmi";
+import { parseEther, Hex } from "viem";
+
+const {
+  signTypedData,
+  status: sigStatus,
+  error: sigError,
+  data: signature,
+} = useSignTypedData();
+
+// Check allowance and permit if needed
+const { allowance } = await flaunchWrite.getPermit2AllowanceAndNonce(
+  coinAddress
+);
+
+if (allowance < parseEther(coinAmount)) {
+  const { typedData, permitSingle } = await flaunchWrite.getPermit2TypedData(
+    coinAddress
+  );
+  signTypedData(typedData);
+
+  // then call this when signature is not undefined
+  const hash = await flaunchWrite.sellCoin({
+    coinAddress,
+    amountIn: parseEther(coinAmount),
+    slippagePercent: 5,
+    permitSingle,
+    signature,
+  });
+} else {
+  // if already approved
+  const hash = await flaunchWrite.sellCoin({
+    coinAddress,
+    amountIn: parseEther(coinAmount),
+    slippagePercent: 5,
+  });
+}
+```
+
+### Flaunching a Memecoin
+
+Flaunch your own memecoin with default parameters:
+
+_**Flaunches below $10k market caps don't incur any protocol fees!**_
+
+```ts
+const hash = await flaunchWrite.flaunchIPFS({
+  name: "Test",
+  symbol: "TEST",
+  fairLaunchPercent: 60, // 60%
+  fairLaunchDuration: 30 * 60, // 30 mins
+  initialMarketCapUSD: 10_000, // $10k
+  creator: address,
+  creatorFeeAllocationPercent: 80, // 80% to creator, 20% to community
+  metadata: {
+    base64Image: imageData, // refer to the code below, on how to generate this base64Image
+    description: "Your memecoin description",
+    // optional:
+    websiteUrl: "https://example.com/",
+    discordUrl: "https://discord.gg/example",
+    twitterUrl: "https://x.com/example",
+    telegramUrl: "https://t.me/example",
+  },
+  pinataConfig: {
+    // Use one-time JWT for client-side uploads
+    // Refer: https://www.pinata.cloud/blog/how-to-upload-to-ipfs-from-the-frontend-with-signed-jwts/
+    jwt: pinataJWT,
+  },
+});
+```
+
+#### How to generate `base64Image` from User uploaded file
+
+```tsx
+// handle image file input and convert into base64
+const handleImageChange = useCallback(
+  (e: ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+
+      // read the file as base64
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64String = reader.result as string;
+
+        // this can be passed to the flaunch function call
+        handleFlaunch({ imageData: base64String });
+
+        // use `storedImagePreview` to display the uploaded image with <image src={storedImagePreview} />
+        setStoredImagePreview(base64String);
+      };
+      reader.readAsDataURL(file);
+    }
+  },
+  [setStoredImagePreview]
+);
+
+// File upload input
+<input
+  type="file"
+  accept="image/*"
+  onchange="handleImageChange(event)"
+  id="image-upload"
+/>;
+```
+
+### Flaunch with Address Fee Splits
+
+You can flaunch a coin and share the revenue with the creator and an array of recipients, each with a different percentage share.\
+Example below of a creator splitting 50% of their revenue with 2 addresses, with 30% and 70% share respectively:
+
+```ts
+await flaunchWrite.flaunchIPFSWithSplitManager({
+  name: "...",
+  symbol: "...",
+  metadata: {
+    base64Image: "...",
+  },
+  pinataConfig: {
+    jwt: "...",
+  },
+  fairLaunchPercent: 40,
+  fairLaunchDuration: 30 * 60, // 30 mins
+  initialMarketCapUSD: 1_000,
+  creator: "0x...",
+  creatorFeeAllocationPercent: 100,
+  // **Note:** Split related params
+  creatorSplitPercent: 50,
+  splitReceivers: [
+    {
+      address: "0x123...",
+      percent: 30,
+    },
+    {
+      address: "0xabc...",
+      percent: 70,
+    },
+  ],
+});
+```
+
+### Advanced Integration: Revenue Sharing with RevenueManager
+
+For platforms building on top of Flaunch, the `RevenueManager` contract enables sophisticated revenue-sharing models. It allows platforms to automatically take a protocol fee from the trading fees generated by memecoins launched through their integration.
+
+**Key Concepts:**
+
+1.  **Deployment & Initialization**: Before flaunching tokens via your platform, deploy an instance of your `RevenueManager` with your protocol fee and recipient address.
+
+```ts
+const revenueManagerInstanceAddress = await flaunchWrite.deployRevenueManager({
+  protocolRecipient: "0xabc...",
+  protocolFeePercent: 20, // 20% revenue share between protocol and 80% to coin creators (of the 1% swap fees)
+});
+```
+
+2.  **Flaunching Directly to Manager**: Instead of the creator receiving the Flaunch NFT, you'd flaunch the token directly into the `RevenueManager`. This automatically sets up the fee split.
+
+```ts
+await flaunchWrite.flaunchIPFSWithRevenueManager({
+  name: "...",
+  symbol: "...",
+  metadata: {
+    base64Image: "...",
+  },
+  pinataConfig: {
+    jwt: "...",
+  },
+  fairLaunchPercent: 40,
+  fairLaunchDuration: 30 * 60, // 30 mins
+  initialMarketCapUSD: 1_000,
+  creator: "0x...",
+  creatorFeeAllocationPercent: 100,
+  // **Note:** Specify your instance of the RevenueManager here
+  revenueManagerInstanceAddress: "...",
+});
+```
+
+3.  **Claiming Fees**: Creators can claim their share of earned fees, and the protocol can claim its share via the `RevenueManager` contract.
+
+```ts
+// check address' balance
+const balance = await flaunchRead.revenueManagerBalance({
+  revenueManagerAddress: revenueManagerInstanceAddress,
+  recipient: "0xabc...",
+});
+
+// protocol claim: the connected wallet must be the protocol recipient for the revenue manager
+await flaunchWrite.revenueManagerProtocolClaim({
+  revenueManagerAddress: revenueManagerInstanceAddress,
+});
+
+// creator claim: the connected wallet must be the coin's creator for them to claim their share
+await flaunchWrite.revenueManagerCreatorClaim({
+  revenueManagerAddress: revenueManagerInstanceAddress,
+});
+
+// creator claim: for specific flaunch token ids:
+await flaunchWrite.revenueManagerCreatorClaimForTokens({
+  revenueManagerAddress: revenueManagerInstanceAddress,
+  flaunchTokens: [
+    {
+      flaunch: FlaunchAddress[base.id],
+      tokenId: 5,
+    },
+    {
+      flaunch: FlaunchV1_1Address[base.id],
+      tokenId: 10,
+    },
+  ],
+});
+```
+
+Refer to the [RevenueManager Docs](https://docs.flaunch.gg/manager-types/revenuemanager) for detailed implementation guides and function references.
+
+### All SDK functions
+
+For a list of all the functions in the SDK, refer to: [FlaunchSDK.ts](./src/sdk/FlaunchSDK.ts)
+
+### React Hooks
+
+The package also has hooks to listen for new Flaunches and new Coin Swaps. Refer to: [hooks](./src/hooks/FlaunchPositionManagerHooks.ts)
+
+```tsx
+import { usePoolCreatedEvents, usePoolSwapEvents } from "@flaunch/sdk/hooks";
+
+const { logs: poolCreatedLogs } = usePoolCreatedEvents(flaunchRead);
+const { logs: poolSwapLogs } = usePoolSwapEvents(flaunchRead, coinAddress);
+
+/**
+ * The `poolSwapLogs` calculates & returns the net swapped amount:
+ *
+ * type BuySwapLog = {
+ *  ...eventLog,
+ *  timestamp: number;
+ *  type: "BUY";
+ *   delta: {
+ *     coinsBought: bigint;
+ *     flETHSold: bigint;
+ *     fees: {
+ *       isInFLETH: boolean;
+ *       amount: bigint;
+ *     };
+ *   };
+ * };
+ *
+ * type SellSwapLog = {
+ *  ...eventLog,
+ *  timestamp: number;
+ *  type: "SELL";
+ *   delta: {
+ *     coinsSold: bigint;
+ *     flETHBought: bigint;
+ *     fees: {
+ *       isInFLETH: boolean;
+ *       amount: bigint;
+ *     };
+ *   };
+ * };
+ */
+```
+
+## Flaunch Reference
+
+For detailed protocol documentation, visit our [Docs](https://docs.flaunch.gg/).
+
+# API Documentation
+
+@flaunch/sdk - v0.8.2 / Exports / ReadFlaunchSDK
+
+# Class: ReadFlaunchSDK
+
+Base class for interacting with Flaunch protocol in read-only mode
+
+## Hierarchy
+
+- **`ReadFlaunchSDK`**
+
+  ↳ `ReadWriteFlaunchSDK`
+
+## Table of contents
+
+### Constructors
+
+- constructor
+
+### Properties
+
+- TICK_SPACING
+- chainId
+- drift
+- readAnyBidWall
+- readAnyPositionManager
+- readBidWall
+- readBidWallV1_1
+- readFairLaunch
+- readFairLaunchV1_1
+- readFeeEscrow
+- readFlaunch
+- readFlaunchV1_1
+- readFlaunchZap
+- readPermit2
+- readPoolManager
+- readPositionManager
+- readPositionManagerV1_1
+- readQuoter
+- readReferralEscrow
+- readStateView
+- readTokenImporter
+- resolveIPFS
+
+### Methods
+
+- bidWallPosition
+- coinMarketCapInUSD
+- coinPriceInETH
+- coinPriceInUSD
+- creatorRevenue
+- currentTick
+- ethRequiredToFlaunch
+- fairLaunchCoinOnlyPosition
+- fairLaunchDuration
+- fairLaunchETHOnlyPosition
+- fairLaunchInfo
+- flETHIsCurrencyZero
+- getBidWall
+- getBidWallAddress
+- getBuyQuoteExactInput
+- getBuyQuoteExactOutput
+- getCoinMetadata
+- getCoinMetadataFromTokenId
+- getCoinMetadataFromTokenIds
+- getCoinVersion
+- getETHUSDCPrice
+- getFairLaunch
+- getFairLaunchAddress
+- getFlaunchingFee
+- getPositionManager
+- getPositionManagerAddress
+- getSellQuoteExactInput
+- initialSqrtPriceX96
+- initialTick
+- isFairLaunchActive
+- isValidCoin
+- parseSwapTx
+- pollPoolCreatedNow
+- pollPoolSwapNow
+- poolId
+- positionInfo
+- referralBalance
+- revenueManagerAllTokensByCreator
+- revenueManagerAllTokensInManager
+- revenueManagerBalance
+- revenueManagerProtocolBalance
+- revenueManagerTokensCount
+- setIPFSResolver
+- tokenImporterVerifyMemecoin
+- watchPoolCreated
+- watchPoolSwap
+
+## Constructors
+
+### constructor
+
+• **new ReadFlaunchSDK**(`chainId`, `drift?`): `ReadFlaunchSDK`
+
+Parameters
+
+| Name      | Type     |
+| :-------- | :------- |
+| `chainId` | `number` |
+| `drift`   | `Drift`  |
+
+Returns
+
+`ReadFlaunchSDK`
+
+## Properties
+
+### TICK_SPACING
+
+• `Readonly` **TICK_SPACING**: `60`
+
+---
+
+### chainId
+
+• `Readonly` **chainId**: `number`
+
+---
+
+### drift
+
+• `Readonly` **drift**: `Drift`
+
+---
+
+### readAnyBidWall
+
+• `Readonly` **readAnyBidWall**: `AnyBidWall`
+
+---
+
+### readAnyPositionManager
+
+• `Readonly` **readAnyPositionManager**: `ReadAnyPositionManager`
+
+---
+
+### readBidWall
+
+• `Readonly` **readBidWall**: `ReadBidWall`
+
+---
+
+### readBidWallV1_1
+
+• `Readonly` **readBidWallV1_1**: `ReadBidWallV1_1`
+
+---
+
+### readFairLaunch
+
+• `Readonly` **readFairLaunch**: `ReadFairLaunch`
+
+---
+
+### readFairLaunchV1_1
+
+• `Readonly` **readFairLaunchV1_1**: `ReadFairLaunchV1_1`
+
+---
+
+### readFeeEscrow
+
+• `Readonly` **readFeeEscrow**: `ReadFeeEscrow`
+
+---
+
+### readFlaunch
+
+• `Readonly` **readFlaunch**: `ReadFlaunch`
+
+---
+
+### readFlaunchV1_1
+
+• `Readonly` **readFlaunchV1_1**: `ReadFlaunchV1_1`
+
+---
+
+### readFlaunchZap
+
+• `Readonly` **readFlaunchZap**: `ReadFlaunchZap`
+
+---
+
+### readPermit2
+
+• `Readonly` **readPermit2**: `ReadPermit2`
+
+---
+
+### readPoolManager
+
+• `Readonly` **readPoolManager**: `ReadPoolManager`
+
+---
+
+### readPositionManager
+
+• `Readonly` **readPositionManager**: `ReadFlaunchPositionManager`
+
+---
+
+### readPositionManagerV1_1
+
+• `Readonly` **readPositionManagerV1_1**: `ReadFlaunchPositionManagerV1_1`
+
+---
+
+### readQuoter
+
+• `Readonly` **readQuoter**: `ReadQuoter`
+
+---
+
+### readReferralEscrow
+
+• `Readonly` **readReferralEscrow**: `ReadReferralEscrow`
+
+---
+
+### readStateView
+
+• `Readonly` **readStateView**: `ReadStateView`
+
+---
+
+### readTokenImporter
+
+• `Readonly` **readTokenImporter**: `ReadTokenImporter`
+
+---
+
+### resolveIPFS
+
+• **resolveIPFS**: (`value`: `string`) => `string`
+
+Type declaration
+
+▸ (`value`): `string`
+
+#Parameters
+
+| Name    | Type     |
+| :------ | :------- |
+| `value` | `string` |
+
+#Returns
+
+`string`
+
+## Methods
+
+### bidWallPosition
+
+▸ **bidWallPosition**(`coinAddress`, `version?`): `Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `pendingEth`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Gets information about the bid wall position for a coin
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `pendingEth`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Promise<{flETHAmount: bigint, coinAmount: bigint, pendingEth: bigint, tickLower: number, tickUpper: number}> - Bid wall position details
+
+---
+
+### coinMarketCapInUSD
+
+▸ **coinMarketCapInUSD**(`«destructured»`): `Promise`\<`string`\>
+
+Parameters
+
+| Name             | Type             |
+| :--------------- | :--------------- |
+| `«destructured»` | `Object`         |
+| › `coinAddress`  | \`0x$\{string}\` |
+| › `drift?`       | `Drift`          |
+| › `version?`     | `FlaunchVersion` |
+
+Returns
+
+`Promise`\<`string`\>
+
+---
+
+### coinPriceInETH
+
+▸ **coinPriceInETH**(`coinAddress`, `version?`): `Promise`\<`string`\>
+
+Calculates the coin price in ETH based on the current tick
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<`string`\>
+
+Promise<string> - The price of the coin in ETH with 18 decimals precision
+
+---
+
+### coinPriceInUSD
+
+▸ **coinPriceInUSD**(`«destructured»`): `Promise`\<`string`\>
+
+Calculates the coin price in USD based on the current ETH/USDC price
+
+Parameters
+
+| Name             | Type             |
+| :--------------- | :--------------- |
+| `«destructured»` | `Object`         |
+| › `coinAddress`  | \`0x$\{string}\` |
+| › `drift?`       | `Drift`          |
+| › `version?`     | `FlaunchVersion` |
+
+Returns
+
+`Promise`\<`string`\>
+
+Promise<string> - The price of the coin in USD with 2 decimal precision
+
+---
+
+### creatorRevenue
+
+▸ **creatorRevenue**(`creator`, `isV1?`): `Promise`\<`bigint`\>
+
+Gets the ETH balance for the creator to claim
+
+Parameters
+
+| Name      | Type             | Description                                                                                             |
+| :-------- | :--------------- | :------------------------------------------------------------------------------------------------------ |
+| `creator` | \`0x$\{string}\` | The address of the creator to check                                                                     |
+| `isV1?`   | `boolean`        | Optional boolean to check the balance for V1. V1.1 & AnyPositionManager use the same FeeEscrow contract |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+The balance of the creator
+
+---
+
+### currentTick
+
+▸ **currentTick**(`coinAddress`, `version?`): `Promise`\<`number`\>
+
+Gets the current tick for a given coin's pool
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<`number`\>
+
+Promise<number> - The current tick of the pool
+
+---
+
+### ethRequiredToFlaunch
+
+▸ **ethRequiredToFlaunch**(`params`): `Promise`\<`bigint`\>
+
+Calculates the ETH required to flaunch a token, takes into account the ETH for premine and the flaunching fee
+
+Parameters
+
+| Name                         | Type     | Description                        |
+| :--------------------------- | :------- | :--------------------------------- |
+| `params`                     | `Object` | -                                  |
+| `params.initialMarketCapUSD` | `number` | The initial market cap in USD      |
+| `params.premineAmount`       | `bigint` | The amount of coins to be premined |
+| `params.slippagePercent?`    | `number` | The slippage percent               |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The ETH required to flaunch
+
+---
+
+### fairLaunchCoinOnlyPosition
+
+▸ **fairLaunchCoinOnlyPosition**(`coinAddress`, `version?`): `Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Gets information about the coin-only position in a fair launch
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Promise<{flETHAmount: bigint, coinAmount: bigint, tickLower: number, tickUpper: number}> - Position details
+
+---
+
+### fairLaunchDuration
+
+▸ **fairLaunchDuration**(`coinAddress`, `version?`): `Promise`\<`number` \| `bigint`\>
+
+Gets the duration of a fair launch for a given coin
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<`number` \| `bigint`\>
+
+Promise<number> - The duration in seconds (30 minutes for V1, variable for V1.1)
+
+---
+
+### fairLaunchETHOnlyPosition
+
+▸ **fairLaunchETHOnlyPosition**(`coinAddress`, `version?`): `Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Gets information about the ETH-only position in a fair launch
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Promise<{flETHAmount: bigint, coinAmount: bigint, tickLower: number, tickUpper: number}> - Position details
+
+---
+
+### fairLaunchInfo
+
+▸ **fairLaunchInfo**(`coinAddress`, `version?`): `Promise`\<\{ `closed`: `boolean` ; `endsAt`: `bigint` ; `initialTick`: `number` ; `revenue`: `bigint` ; `startsAt`: `bigint` ; `supply`: `bigint` }\>
+
+Gets information about a fair launch for a given coin
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<\{ `closed`: `boolean` ; `endsAt`: `bigint` ; `initialTick`: `number` ; `revenue`: `bigint` ; `startsAt`: `bigint` ; `supply`: `bigint` }\>
+
+Fair launch information from the appropriate contract version
+
+---
+
+### flETHIsCurrencyZero
+
+▸ **flETHIsCurrencyZero**(`coinAddress`): `boolean`
+
+Determines if flETH is currency0 in the pool
+
+Parameters
+
+| Name          | Type             | Description             |
+| :------------ | :--------------- | :---------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin |
+
+Returns
+
+`boolean`
+
+boolean - True if flETH is currency0, false otherwise
+
+---
+
+### getBidWall
+
+▸ **getBidWall**(`version`): `ReadBidWall` \| `AnyBidWall` \| `ReadBidWallV1_1`
+
+Gets the bid wall address for a given version
+
+Parameters
+
+| Name      | Type             | Description                                 |
+| :-------- | :--------------- | :------------------------------------------ |
+| `version` | `FlaunchVersion` | The version to get the bid wall address for |
+
+Returns
+
+`ReadBidWall` \| `AnyBidWall` \| `ReadBidWallV1_1`
+
+---
+
+### getBidWallAddress
+
+▸ **getBidWallAddress**(`version`): \`0x$\{string}\`
+
+Parameters
+
+| Name      | Type             |
+| :-------- | :--------------- |
+| `version` | `FlaunchVersion` |
+
+Returns
+
+\`0x$\{string}\`
+
+---
+
+### getBuyQuoteExactInput
+
+▸ **getBuyQuoteExactInput**(`coinAddress`, `amountIn`, `version?`): `Promise`\<`bigint`\>
+
+Gets a quote for buying tokens with an exact amount of ETH
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the token to buy  |
+| `amountIn`    | `bigint`         | -                                |
+| `version?`    | `FlaunchVersion` | Optional specific version to use |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The expected amount of tokens to receive
+
+---
+
+### getBuyQuoteExactOutput
+
+▸ **getBuyQuoteExactOutput**(`coinAddress`, `amountOut`, `version?`): `Promise`\<`bigint`\>
+
+Gets a quote for buying an exact amount of tokens with ETH
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the token to buy  |
+| `amountOut`   | `bigint`         | -                                |
+| `version?`    | `FlaunchVersion` | Optional specific version to use |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The required amount of ETH to spend
+
+---
+
+### getCoinMetadata
+
+▸ **getCoinMetadata**(`coinAddress`): `Promise`\<`CoinMetadata` & \{ `symbol`: `string` }\>
+
+Retrieves metadata for a given Flaunch coin
+
+Parameters
+
+| Name          | Type             | Description             |
+| :------------ | :--------------- | :---------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin |
+
+Returns
+
+`Promise`\<`CoinMetadata` & \{ `symbol`: `string` }\>
+
+Promise<CoinMetadata & { symbol: string }> - The coin's metadata including name, symbol, description, and social links
+
+---
+
+### getCoinMetadataFromTokenId
+
+▸ **getCoinMetadataFromTokenId**(`flaunch`, `tokenId`): `Promise`\<`CoinMetadata` & \{ `symbol`: `string` }\>
+
+Retrieves metadata for a given Flaunch coin using its token ID & Flaunch contract address
+
+Parameters
+
+| Name      | Type             | Description                         |
+| :-------- | :--------------- | :---------------------------------- |
+| `flaunch` | \`0x$\{string}\` | The address of the Flaunch contract |
+| `tokenId` | `bigint`         | The token ID of the coin            |
+
+Returns
+
+`Promise`\<`CoinMetadata` & \{ `symbol`: `string` }\>
+
+The coin's metadata including name, symbol, description, and social links
+
+---
+
+### getCoinMetadataFromTokenIds
+
+▸ **getCoinMetadataFromTokenIds**(`params`, `batchSize?`, `batchDelay?`): `Promise`\<\{ `coinAddress`: \`0x$\{string}\` ; `collaborators`: `any` ; `description`: `any` ; `discordUrl`: `any` ; `external_link`: `any` ; `image`: `string` ; `name`: `string` ; `symbol`: `string` ; `telegramUrl`: `any` ; `twitterUrl`: `any` }[]\>
+
+Retrieves metadata for multiple Flaunch coins using their token IDs & Flaunch contract addresses
+
+Parameters
+
+| Name         | Type                                                     | Default value | Description                                                          |
+| :----------- | :------------------------------------------------------- | :------------ | :------------------------------------------------------------------- |
+| `params`     | \{ `flaunch`: \`0x$\{string}\` ; `tokenId`: `bigint` }[] | `undefined`   | An array of objects containing flaunch contract address and token ID |
+| `batchSize`  | `number`                                                 | `9`           | Optional, the number of ipfs requests to process in each batch       |
+| `batchDelay` | `number`                                                 | `500`         | Optional, the delay in milliseconds between batches                  |
+
+Returns
+
+`Promise`\<\{ `coinAddress`: \`0x$\{string}\` ; `collaborators`: `any` ; `description`: `any` ; `discordUrl`: `any` ; `external_link`: `any` ; `image`: `string` ; `name`: `string` ; `symbol`: `string` ; `telegramUrl`: `any` ; `twitterUrl`: `any` }[]\>
+
+An array of objects containing coin address, name, symbol, description, and social links
+
+---
+
+### getCoinVersion
+
+▸ **getCoinVersion**(`coinAddress`): `Promise`\<`FlaunchVersion`\>
+
+Determines the version of a Flaunch coin
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin to check |
+
+Returns
+
+`Promise`\<`FlaunchVersion`\>
+
+Promise<FlaunchVersion> - The version of the coin
+
+---
+
+### getETHUSDCPrice
+
+▸ **getETHUSDCPrice**(`drift?`): `Promise`\<`number`\>
+
+Gets the current ETH/USDC price
+
+Parameters
+
+| Name     | Type    | Description                                            |
+| :------- | :------ | :----------------------------------------------------- |
+| `drift?` | `Drift` | Optional drift instance to get price from Base Mainnet |
+
+Returns
+
+`Promise`\<`number`\>
+
+Promise<number> - The current ETH/USDC price
+
+---
+
+### getFairLaunch
+
+▸ **getFairLaunch**(`version`): `ReadFairLaunch` \| `ReadFairLaunchV1_1`
+
+Gets the fair launch address for a given version
+
+Parameters
+
+| Name      | Type             | Description                                    |
+| :-------- | :--------------- | :--------------------------------------------- |
+| `version` | `FlaunchVersion` | The version to get the fair launch address for |
+
+Returns
+
+`ReadFairLaunch` \| `ReadFairLaunchV1_1`
+
+---
+
+### getFairLaunchAddress
+
+▸ **getFairLaunchAddress**(`version`): \`0x$\{string}\`
+
+Parameters
+
+| Name      | Type             |
+| :-------- | :--------------- |
+| `version` | `FlaunchVersion` |
+
+Returns
+
+\`0x$\{string}\`
+
+---
+
+### getFlaunchingFee
+
+▸ **getFlaunchingFee**(`params`): `Promise`\<`bigint`\>
+
+Gets the flaunching fee for a given initial price and slippage percent
+
+Parameters
+
+| Name                         | Type             | Description                   |
+| :--------------------------- | :--------------- | :---------------------------- |
+| `params`                     | `Object`         | -                             |
+| `params.initialMarketCapUSD` | `number`         | The initial market cap in USD |
+| `params.sender`              | \`0x$\{string}\` | The address of the sender     |
+| `params.slippagePercent?`    | `number`         | The slippage percent          |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The flaunching fee
+
+---
+
+### getPositionManager
+
+▸ **getPositionManager**(`version`): `ReadFlaunchPositionManager` \| `ReadFlaunchPositionManagerV1_1` \| `ReadAnyPositionManager`
+
+Gets the position manager address for a given version
+
+Parameters
+
+| Name      | Type             | Description                                         |
+| :-------- | :--------------- | :-------------------------------------------------- |
+| `version` | `FlaunchVersion` | The version to get the position manager address for |
+
+Returns
+
+`ReadFlaunchPositionManager` \| `ReadFlaunchPositionManagerV1_1` \| `ReadAnyPositionManager`
+
+---
+
+### getPositionManagerAddress
+
+▸ **getPositionManagerAddress**(`version`): \`0x$\{string}\`
+
+Parameters
+
+| Name      | Type             |
+| :-------- | :--------------- |
+| `version` | `FlaunchVersion` |
+
+Returns
+
+\`0x$\{string}\`
+
+---
+
+### getSellQuoteExactInput
+
+▸ **getSellQuoteExactInput**(`coinAddress`, `amountIn`, `version?`): `Promise`\<`bigint`\>
+
+Gets a quote for selling an exact amount of tokens for ETH
+
+Parameters
+
+| Name          | Type             | Description                        |
+| :------------ | :--------------- | :--------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the token to sell   |
+| `amountIn`    | `bigint`         | The exact amount of tokens to sell |
+| `version?`    | `FlaunchVersion` | Optional specific version to use   |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The expected amount of ETH to receive
+
+---
+
+### initialSqrtPriceX96
+
+▸ **initialSqrtPriceX96**(`params`): `Promise`\<`bigint`\>
+
+Parameters
+
+| Name                         | Type             |
+| :--------------------------- | :--------------- |
+| `params`                     | `Object`         |
+| `params.coinAddress`         | \`0x$\{string}\` |
+| `params.initialMarketCapUSD` | `number`         |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+---
+
+### initialTick
+
+▸ **initialTick**(`coinAddress`, `version?`): `Promise`\<`number`\>
+
+Gets the initial tick for a fair launch
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<`number`\>
+
+Promise<number> - The initial tick value
+
+---
+
+### isFairLaunchActive
+
+▸ **isFairLaunchActive**(`coinAddress`, `version?`): `Promise`\<`boolean`\>
+
+Checks if a fair launch is currently active for a given coin
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<`boolean`\>
+
+Promise<boolean> - True if fair launch is active, false otherwise
+
+---
+
+### isValidCoin
+
+▸ **isValidCoin**(`coinAddress`): `Promise`\<`boolean`\>
+
+Checks if a given coin address is a valid Flaunch coin (supports all versions)
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin to check |
+
+Returns
+
+`Promise`\<`boolean`\>
+
+Promise<boolean> - True if the coin is valid, false otherwise
+
+---
+
+### parseSwapTx
+
+▸ **parseSwapTx**\<`T`\>(`params`): `Promise`\<`T` extends `boolean` ? `undefined` \| `GenericBuySwapLog` \| `GenericSellSwapLog` : `undefined` \| `GenericBaseSwapLog`\>
+
+Parses a transaction hash to extract PoolSwap events and return parsed swap data
+
+Type parameters
+
+| Name | Type                                           |
+| :--- | :--------------------------------------------- |
+| `T`  | extends `undefined` \| `boolean` = `undefined` |
+
+Parameters
+
+| Name                          | Type             | Description                                        |
+| :---------------------------- | :--------------- | :------------------------------------------------- |
+| `params`                      | `Object`         | Object containing parsing parameters               |
+| `params.flETHIsCurrencyZero?` | `T`              | Whether flETH is currency 0 in the pool (optional) |
+| `params.txHash`               | \`0x$\{string}\` | The transaction hash to parse                      |
+| `params.version`              | `FlaunchVersion` | The Flaunch version to use for parsing             |
+
+Returns
+
+`Promise`\<`T` extends `boolean` ? `undefined` \| `GenericBuySwapLog` \| `GenericSellSwapLog` : `undefined` \| `GenericBaseSwapLog`\>
+
+Parsed swap log or undefined if no PoolSwap event found.
+If flETHIsCurrencyZero is provided, returns typed swap data with BUY/SELL information.
+If flETHIsCurrencyZero is undefined, returns basic swap log without parsed delta.
+
+---
+
+### pollPoolCreatedNow
+
+▸ **pollPoolCreatedNow**(`version?`): `undefined` \| `Promise`\<`void`\>
+
+Polls for current pool creation events
+
+Parameters
+
+| Name      | Type             | Default value         | Description                                  |
+| :-------- | :--------------- | :-------------------- | :------------------------------------------- |
+| `version` | `FlaunchVersion` | `FlaunchVersion.V1_1` | Version of Flaunch to use (defaults to V1_1) |
+
+Returns
+
+`undefined` \| `Promise`\<`void`\>
+
+Current pool creation events or undefined if polling is not available
+
+---
+
+### pollPoolSwapNow
+
+▸ **pollPoolSwapNow**(`version?`): `undefined` \| `Promise`\<`void`\>
+
+Polls for current pool swap events
+
+Parameters
+
+| Name      | Type             | Default value         | Description                                  |
+| :-------- | :--------------- | :-------------------- | :------------------------------------------- |
+| `version` | `FlaunchVersion` | `FlaunchVersion.V1_1` | Version of Flaunch to use (defaults to V1_1) |
+
+Returns
+
+`undefined` \| `Promise`\<`void`\>
+
+Current pool swap events or undefined if polling is not available
+
+---
+
+### poolId
+
+▸ **poolId**(`coinAddress`, `version?`): `Promise`\<\`0x$\{string}\`\>
+
+Gets the pool ID for a given coin
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin          |
+| `version?`    | `FlaunchVersion` | Optional specific version to use |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Promise<string> - The pool ID
+
+---
+
+### positionInfo
+
+▸ **positionInfo**(`params`): `Promise`\<\{ `feeGrowthInside0LastX128`: `bigint` ; `feeGrowthInside1LastX128`: `bigint` ; `liquidity`: `bigint` } \| \{ `feeGrowthInside0LastX128`: `bigint` ; `feeGrowthInside1LastX128`: `bigint` ; `liquidity`: `bigint` }\>
+
+Gets information about a liquidity position
+
+Parameters
+
+| Name     | Type                 | Description                           |
+| :------- | :------------------- | :------------------------------------ |
+| `params` | `PositionInfoParams` | Parameters for querying position info |
+
+Returns
+
+`Promise`\<\{ `feeGrowthInside0LastX128`: `bigint` ; `feeGrowthInside1LastX128`: `bigint` ; `liquidity`: `bigint` } \| \{ `feeGrowthInside0LastX128`: `bigint` ; `feeGrowthInside1LastX128`: `bigint` ; `liquidity`: `bigint` }\>
+
+Position information from the state view contract
+
+---
+
+### referralBalance
+
+▸ **referralBalance**(`recipient`, `coinAddress`): `Promise`\<`bigint`\>
+
+Gets the balance of a recipient for a given coin
+
+Parameters
+
+| Name          | Type             | Description                           |
+| :------------ | :--------------- | :------------------------------------ |
+| `recipient`   | \`0x$\{string}\` | The address of the recipient to check |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin               |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The balance of the recipient
+
+---
+
+### revenueManagerAllTokensByCreator
+
+▸ **revenueManagerAllTokensByCreator**(`params`): `Promise`\<readonly \{ `flaunch`: \`0x$\{string}\` ; `tokenId`: `bigint` }[]\>
+
+Gets all tokens created by a specific creator address
+
+Parameters
+
+| Name                           | Type             | Description                                    |
+| :----------------------------- | :--------------- | :--------------------------------------------- |
+| `params`                       | `Object`         | Parameters for querying tokens by creator      |
+| `params.creator`               | \`0x$\{string}\` | The address of the creator to query tokens for |
+| `params.revenueManagerAddress` | \`0x$\{string}\` | The address of the revenue manager             |
+| `params.sortByDesc?`           | `boolean`        | Whether to sort the tokens by descending order |
+
+Returns
+
+`Promise`\<readonly \{ `flaunch`: \`0x$\{string}\` ; `tokenId`: `bigint` }[]\>
+
+Promise<Array<{flaunch: Address, tokenId: bigint}>> - Array of token objects containing flaunch address and token ID
+
+---
+
+### revenueManagerAllTokensInManager
+
+▸ **revenueManagerAllTokensInManager**(`params`): `Promise`\<\{ `flaunch`: \`0x$\{string}\` ; `tokenId`: `bigint` }[]\>
+
+Gets all tokens currently managed by a revenue manager
+
+Parameters
+
+| Name                           | Type             | Description                                                          |
+| :----------------------------- | :--------------- | :------------------------------------------------------------------- |
+| `params`                       | `Object`         | Parameters for querying tokens in manager                            |
+| `params.revenueManagerAddress` | \`0x$\{string}\` | The address of the revenue manager                                   |
+| `params.sortByDesc?`           | `boolean`        | Optional boolean to sort tokens in descending order (default: false) |
+
+Returns
+
+`Promise`\<\{ `flaunch`: \`0x$\{string}\` ; `tokenId`: `bigint` }[]\>
+
+Promise<Array<{flaunch: Address, tokenId: bigint}>> - Array of token objects containing flaunch address and token ID
+
+---
+
+### revenueManagerBalance
+
+▸ **revenueManagerBalance**(`params`): `Promise`\<`bigint`\>
+
+Gets the claimable balance of ETH for the recipient from a revenue manager
+
+Parameters
+
+| Name                           | Type             | Description                           |
+| :----------------------------- | :--------------- | :------------------------------------ |
+| `params`                       | `Object`         | Parameters for checking the balance   |
+| `params.recipient`             | \`0x$\{string}\` | The address of the recipient to check |
+| `params.revenueManagerAddress` | \`0x$\{string}\` | The address of the revenue manager    |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The claimable balance of ETH
+
+---
+
+### revenueManagerProtocolBalance
+
+▸ **revenueManagerProtocolBalance**(`revenueManagerAddress`): `Promise`\<`bigint`\>
+
+Gets the claimable balance of ETH for the protocol from a revenue manager
+
+Parameters
+
+| Name                    | Type             | Description                        |
+| :---------------------- | :--------------- | :--------------------------------- |
+| `revenueManagerAddress` | \`0x$\{string}\` | The address of the revenue manager |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The claimable balance of ETH
+
+---
+
+### revenueManagerTokensCount
+
+▸ **revenueManagerTokensCount**(`revenueManagerAddress`): `Promise`\<`bigint`\>
+
+Gets the total number of tokens managed by a revenue manager
+
+Parameters
+
+| Name                    | Type             | Description                        |
+| :---------------------- | :--------------- | :--------------------------------- |
+| `revenueManagerAddress` | \`0x$\{string}\` | The address of the revenue manager |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The total count of tokens
+
+---
+
+### setIPFSResolver
+
+▸ **setIPFSResolver**(`resolverFn`): `void`
+
+Sets a custom IPFS resolver function
+
+Parameters
+
+| Name         | Type                               | Description                          |
+| :----------- | :--------------------------------- | :----------------------------------- |
+| `resolverFn` | (`ipfsHash`: `string`) => `string` | Custom function to resolve IPFS URIs |
+
+Returns
+
+`void`
+
+**`Dev`**
+
+this is used to resolve IPFS hash to a gateway URL
+eg: input: Qabc, output: https://ipfs.io/ipfs/Qabc
+
+---
+
+### tokenImporterVerifyMemecoin
+
+▸ **tokenImporterVerifyMemecoin**(`memecoin`): `Promise`\<\{ `isValid`: `boolean` ; `verifier`: \`0x$\{string}\` }\>
+
+Verifies if a memecoin is valid for importing
+
+Parameters
+
+| Name       | Type             | Description                           |
+| :--------- | :--------------- | :------------------------------------ |
+| `memecoin` | \`0x$\{string}\` | The address of the memecoin to import |
+
+Returns
+
+`Promise`\<\{ `isValid`: `boolean` ; `verifier`: \`0x$\{string}\` }\>
+
+Promise<{ isValid: boolean; verifier: Address }> - The result of the verification
+
+---
+
+### watchPoolCreated
+
+▸ **watchPoolCreated**(`params`, `version?`): `Promise`\<\{ `cleanup`: () => `void` ; `pollPoolCreatedNow`: () => `Promise`\<`void`\> = pollEvents }\>
+
+Watches for pool creation events
+
+Parameters
+
+| Name      | Type                     | Default value         | Description                                  |
+| :-------- | :----------------------- | :-------------------- | :------------------------------------------- |
+| `params`  | `WatchPoolCreatedParams` | `undefined`           | Parameters for watching pool creation        |
+| `version` | `FlaunchVersion`         | `FlaunchVersion.V1_1` | Version of Flaunch to use (defaults to V1_1) |
+
+Returns
+
+`Promise`\<\{ `cleanup`: () => `void` ; `pollPoolCreatedNow`: () => `Promise`\<`void`\> = pollEvents }\>
+
+Subscription to pool creation events
+
+---
+
+### watchPoolSwap
+
+▸ **watchPoolSwap**(`params`, `version?`): `Promise`\<\{ `cleanup`: () => `void` ; `pollPoolSwapNow`: () => `Promise`\<`void`\> = pollEvents }\>
+
+Watches for pool swap events
+
+Parameters
+
+| Name      | Type                  | Default value         | Description                                                       |
+| :-------- | :-------------------- | :-------------------- | :---------------------------------------------------------------- |
+| `params`  | `WatchPoolSwapParams` | `undefined`           | Parameters for watching pool swaps including optional coin filter |
+| `version` | `FlaunchVersion`      | `FlaunchVersion.V1_1` | Version of Flaunch to use (defaults to V1_1)                      |
+
+Returns
+
+`Promise`\<\{ `cleanup`: () => `void` ; `pollPoolSwapNow`: () => `Promise`\<`void`\> = pollEvents }\>
+
+Subscription to pool swap events
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / ReadWriteFlaunchSDK
+
+# Class: ReadWriteFlaunchSDK
+
+Base class for interacting with Flaunch protocol in read-only mode
+
+## Hierarchy
+
+- `ReadFlaunchSDK`
+
+  ↳ **`ReadWriteFlaunchSDK`**
+
+## Table of contents
+
+### Constructors
+
+- constructor
+
+### Properties
+
+- TICK_SPACING
+- chainId
+- drift
+- readAnyBidWall
+- readAnyPositionManager
+- readBidWall
+- readBidWallV1_1
+- readFairLaunch
+- readFairLaunchV1_1
+- readFeeEscrow
+- readFlaunch
+- readFlaunchV1_1
+- readFlaunchZap
+- readPermit2
+- readPoolManager
+- readPositionManager
+- readPositionManagerV1_1
+- readQuoter
+- readReferralEscrow
+- readStateView
+- readTokenImporter
+- readWriteAnyPositionManager
+- readWriteFeeEscrow
+- readWriteFlaunchZap
+- readWritePermit2
+- readWritePositionManager
+- readWritePositionManagerV1_1
+- readWriteReferralEscrow
+- readWriteTokenImporter
+- readWriteTreasuryManagerFactory
+- resolveIPFS
+
+### Methods
+
+- anyFlaunch
+- bidWallPosition
+- buyCoin
+- claimReferralBalance
+- coinBalance
+- coinMarketCapInUSD
+- coinPriceInETH
+- coinPriceInUSD
+- creatorRevenue
+- currentTick
+- deployRevenueManager
+- ethRequiredToFlaunch
+- fairLaunchCoinOnlyPosition
+- fairLaunchDuration
+- fairLaunchETHOnlyPosition
+- fairLaunchInfo
+- flETHIsCurrencyZero
+- flaunch
+- flaunchIPFS
+- flaunchIPFSWithRevenueManager
+- flaunchIPFSWithSplitManager
+- flaunchWithRevenueManager
+- flaunchWithSplitManager
+- getBidWall
+- getBidWallAddress
+- getBuyQuoteExactInput
+- getBuyQuoteExactOutput
+- getCoinMetadata
+- getCoinMetadataFromTokenId
+- getCoinMetadataFromTokenIds
+- getCoinVersion
+- getETHUSDCPrice
+- getFairLaunch
+- getFairLaunchAddress
+- getFlaunchingFee
+- getPermit2AllowanceAndNonce
+- getPermit2TypedData
+- getPositionManager
+- getPositionManagerAddress
+- getSellQuoteExactInput
+- importMemecoin
+- initialSqrtPriceX96
+- initialTick
+- isFairLaunchActive
+- isValidCoin
+- parseSwapTx
+- pollPoolCreatedNow
+- pollPoolSwapNow
+- poolId
+- positionInfo
+- referralBalance
+- revenueManagerAllTokensByCreator
+- revenueManagerAllTokensInManager
+- revenueManagerBalance
+- revenueManagerCreatorClaim
+- revenueManagerCreatorClaimForTokens
+- revenueManagerProtocolBalance
+- revenueManagerProtocolClaim
+- revenueManagerTokensCount
+- sellCoin
+- setIPFSResolver
+- tokenImporterVerifyMemecoin
+- watchPoolCreated
+- watchPoolSwap
+- withdrawCreatorRevenue
+
+## Constructors
+
+### constructor
+
+• **new ReadWriteFlaunchSDK**(`chainId`, `drift?`): `ReadWriteFlaunchSDK`
+
+Parameters
+
+| Name      | Type                          |
+| :-------- | :---------------------------- |
+| `chainId` | `number`                      |
+| `drift`   | `Drift`\<`ReadWriteAdapter`\> |
+
+Returns
+
+`ReadWriteFlaunchSDK`
+
+Overrides
+
+ReadFlaunchSDK.constructor
+
+## Properties
+
+### TICK_SPACING
+
+• `Readonly` **TICK_SPACING**: `60`
+
+Inherited from
+
+ReadFlaunchSDK.TICK_SPACING
+
+---
+
+### chainId
+
+• `Readonly` **chainId**: `number`
+
+Inherited from
+
+ReadFlaunchSDK.chainId
+
+---
+
+### drift
+
+• **drift**: `Drift`\<`ReadWriteAdapter`\>
+
+Overrides
+
+ReadFlaunchSDK.drift
+
+---
+
+### readAnyBidWall
+
+• `Readonly` **readAnyBidWall**: `AnyBidWall`
+
+Inherited from
+
+ReadFlaunchSDK.readAnyBidWall
+
+---
+
+### readAnyPositionManager
+
+• `Readonly` **readAnyPositionManager**: `ReadAnyPositionManager`
+
+Inherited from
+
+ReadFlaunchSDK.readAnyPositionManager
+
+---
+
+### readBidWall
+
+• `Readonly` **readBidWall**: `ReadBidWall`
+
+Inherited from
+
+ReadFlaunchSDK.readBidWall
+
+---
+
+### readBidWallV1_1
+
+• `Readonly` **readBidWallV1_1**: `ReadBidWallV1_1`
+
+Inherited from
+
+ReadFlaunchSDK.readBidWallV1_1
+
+---
+
+### readFairLaunch
+
+• `Readonly` **readFairLaunch**: `ReadFairLaunch`
+
+Inherited from
+
+ReadFlaunchSDK.readFairLaunch
+
+---
+
+### readFairLaunchV1_1
+
+• `Readonly` **readFairLaunchV1_1**: `ReadFairLaunchV1_1`
+
+Inherited from
+
+ReadFlaunchSDK.readFairLaunchV1_1
+
+---
+
+### readFeeEscrow
+
+• `Readonly` **readFeeEscrow**: `ReadFeeEscrow`
+
+Inherited from
+
+ReadFlaunchSDK.readFeeEscrow
+
+---
+
+### readFlaunch
+
+• `Readonly` **readFlaunch**: `ReadFlaunch`
+
+Inherited from
+
+ReadFlaunchSDK.readFlaunch
+
+---
+
+### readFlaunchV1_1
+
+• `Readonly` **readFlaunchV1_1**: `ReadFlaunchV1_1`
+
+Inherited from
+
+ReadFlaunchSDK.readFlaunchV1_1
+
+---
+
+### readFlaunchZap
+
+• `Readonly` **readFlaunchZap**: `ReadFlaunchZap`
+
+Inherited from
+
+ReadFlaunchSDK.readFlaunchZap
+
+---
+
+### readPermit2
+
+• `Readonly` **readPermit2**: `ReadPermit2`
+
+Inherited from
+
+ReadFlaunchSDK.readPermit2
+
+---
+
+### readPoolManager
+
+• `Readonly` **readPoolManager**: `ReadPoolManager`
+
+Inherited from
+
+ReadFlaunchSDK.readPoolManager
+
+---
+
+### readPositionManager
+
+• `Readonly` **readPositionManager**: `ReadFlaunchPositionManager`
+
+Inherited from
+
+ReadFlaunchSDK.readPositionManager
+
+---
+
+### readPositionManagerV1_1
+
+• `Readonly` **readPositionManagerV1_1**: `ReadFlaunchPositionManagerV1_1`
+
+Inherited from
+
+ReadFlaunchSDK.readPositionManagerV1_1
+
+---
+
+### readQuoter
+
+• `Readonly` **readQuoter**: `ReadQuoter`
+
+Inherited from
+
+ReadFlaunchSDK.readQuoter
+
+---
+
+### readReferralEscrow
+
+• `Readonly` **readReferralEscrow**: `ReadReferralEscrow`
+
+Inherited from
+
+ReadFlaunchSDK.readReferralEscrow
+
+---
+
+### readStateView
+
+• `Readonly` **readStateView**: `ReadStateView`
+
+Inherited from
+
+ReadFlaunchSDK.readStateView
+
+---
+
+### readTokenImporter
+
+• `Readonly` **readTokenImporter**: `ReadTokenImporter`
+
+Inherited from
+
+ReadFlaunchSDK.readTokenImporter
+
+---
+
+### readWriteAnyPositionManager
+
+• `Readonly` **readWriteAnyPositionManager**: `ReadWriteAnyPositionManager`
+
+---
+
+### readWriteFeeEscrow
+
+• `Readonly` **readWriteFeeEscrow**: `ReadWriteFeeEscrow`
+
+---
+
+### readWriteFlaunchZap
+
+• `Readonly` **readWriteFlaunchZap**: `ReadWriteFlaunchZap`
+
+---
+
+### readWritePermit2
+
+• `Readonly` **readWritePermit2**: `ReadWritePermit2`
+
+---
+
+### readWritePositionManager
+
+• `Readonly` **readWritePositionManager**: `ReadWriteFlaunchPositionManager`
+
+---
+
+### readWritePositionManagerV1_1
+
+• `Readonly` **readWritePositionManagerV1_1**: `ReadWriteFlaunchPositionManagerV1_1`
+
+---
+
+### readWriteReferralEscrow
+
+• `Readonly` **readWriteReferralEscrow**: `ReadWriteReferralEscrow`
+
+---
+
+### readWriteTokenImporter
+
+• `Readonly` **readWriteTokenImporter**: `ReadWriteTokenImporter`
+
+---
+
+### readWriteTreasuryManagerFactory
+
+• `Readonly` **readWriteTreasuryManagerFactory**: `ReadWriteTreasuryManagerFactory`
+
+---
+
+### resolveIPFS
+
+• **resolveIPFS**: (`value`: `string`) => `string`
+
+Type declaration
+
+▸ (`value`): `string`
+
+#Parameters
+
+| Name    | Type     |
+| :------ | :------- |
+| `value` | `string` |
+
+#Returns
+
+`string`
+
+Inherited from
+
+ReadFlaunchSDK.resolveIPFS
+
+## Methods
+
+### anyFlaunch
+
+▸ **anyFlaunch**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Creates a new Flaunch with AnyPositionManager for external coins
+
+Parameters
+
+| Name     | Type               | Description                                                 |
+| :------- | :----------------- | :---------------------------------------------------------- |
+| `params` | `AnyFlaunchParams` | Parameters for creating the Flaunch with AnyPositionManager |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+---
+
+### bidWallPosition
+
+▸ **bidWallPosition**(`coinAddress`, `version?`): `Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `pendingEth`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Gets information about the bid wall position for a coin
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `pendingEth`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Promise<{flETHAmount: bigint, coinAmount: bigint, pendingEth: bigint, tickLower: number, tickUpper: number}> - Bid wall position details
+
+Inherited from
+
+ReadFlaunchSDK.bidWallPosition
+
+---
+
+### buyCoin
+
+▸ **buyCoin**(`params`, `version?`): `Promise`\<\`0x$\{string}\`\>
+
+Buys a coin with ETH
+
+Parameters
+
+| Name       | Type             | Description                                                                     |
+| :--------- | :--------------- | :------------------------------------------------------------------------------ |
+| `params`   | `BuyCoinParams`  | Parameters for buying the coin including amount, slippage, and referrer         |
+| `version?` | `FlaunchVersion` | Optional specific version to use. If not provided, will determine automatically |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response for the buy operation
+
+---
+
+### claimReferralBalance
+
+▸ **claimReferralBalance**(`coins`, `recipient`): `Promise`\<\`0x$\{string}\`\>
+
+Claims the referral balance for a given recipient
+
+Parameters
+
+| Name        | Type               | Description                                           |
+| :---------- | :----------------- | :---------------------------------------------------- |
+| `coins`     | \`0x$\{string}\`[] | The addresses of the coins to claim                   |
+| `recipient` | \`0x$\{string}\`   | The address of the recipient to claim the balance for |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+---
+
+### coinBalance
+
+▸ **coinBalance**(`coinAddress`): `Promise`\<`bigint`\>
+
+Gets the balance of a specific coin for the connected wallet
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin to check |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The balance of the coin
+
+---
+
+### coinMarketCapInUSD
+
+▸ **coinMarketCapInUSD**(`«destructured»`): `Promise`\<`string`\>
+
+Parameters
+
+| Name             | Type             |
+| :--------------- | :--------------- |
+| `«destructured»` | `Object`         |
+| › `coinAddress`  | \`0x$\{string}\` |
+| › `drift?`       | `Drift`          |
+| › `version?`     | `FlaunchVersion` |
+
+Returns
+
+`Promise`\<`string`\>
+
+Inherited from
+
+ReadFlaunchSDK.coinMarketCapInUSD
+
+---
+
+### coinPriceInETH
+
+▸ **coinPriceInETH**(`coinAddress`, `version?`): `Promise`\<`string`\>
+
+Calculates the coin price in ETH based on the current tick
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<`string`\>
+
+Promise<string> - The price of the coin in ETH with 18 decimals precision
+
+Inherited from
+
+ReadFlaunchSDK.coinPriceInETH
+
+---
+
+### coinPriceInUSD
+
+▸ **coinPriceInUSD**(`«destructured»`): `Promise`\<`string`\>
+
+Calculates the coin price in USD based on the current ETH/USDC price
+
+Parameters
+
+| Name             | Type             |
+| :--------------- | :--------------- |
+| `«destructured»` | `Object`         |
+| › `coinAddress`  | \`0x$\{string}\` |
+| › `drift?`       | `Drift`          |
+| › `version?`     | `FlaunchVersion` |
+
+Returns
+
+`Promise`\<`string`\>
+
+Promise<string> - The price of the coin in USD with 2 decimal precision
+
+Inherited from
+
+ReadFlaunchSDK.coinPriceInUSD
+
+---
+
+### creatorRevenue
+
+▸ **creatorRevenue**(`creator`, `isV1?`): `Promise`\<`bigint`\>
+
+Gets the ETH balance for the creator to claim
+
+Parameters
+
+| Name      | Type             | Description                                                                                             |
+| :-------- | :--------------- | :------------------------------------------------------------------------------------------------------ |
+| `creator` | \`0x$\{string}\` | The address of the creator to check                                                                     |
+| `isV1?`   | `boolean`        | Optional boolean to check the balance for V1. V1.1 & AnyPositionManager use the same FeeEscrow contract |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+The balance of the creator
+
+Inherited from
+
+ReadFlaunchSDK.creatorRevenue
+
+---
+
+### currentTick
+
+▸ **currentTick**(`coinAddress`, `version?`): `Promise`\<`number`\>
+
+Gets the current tick for a given coin's pool
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<`number`\>
+
+Promise<number> - The current tick of the pool
+
+Inherited from
+
+ReadFlaunchSDK.currentTick
+
+---
+
+### deployRevenueManager
+
+▸ **deployRevenueManager**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Deploys a new revenue manager
+
+Parameters
+
+| Name                        | Type             | Description                                  |
+| :-------------------------- | :--------------- | :------------------------------------------- |
+| `params`                    | `Object`         | Parameters for deploying the revenue manager |
+| `params.protocolFeePercent` | `number`         | The percentage of the protocol fee           |
+| `params.protocolRecipient`  | \`0x$\{string}\` | The address of the protocol recipient        |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Address of the deployed revenue manager
+
+---
+
+### ethRequiredToFlaunch
+
+▸ **ethRequiredToFlaunch**(`params`): `Promise`\<`bigint`\>
+
+Calculates the ETH required to flaunch a token, takes into account the ETH for premine and the flaunching fee
+
+Parameters
+
+| Name                         | Type     | Description                        |
+| :--------------------------- | :------- | :--------------------------------- |
+| `params`                     | `Object` | -                                  |
+| `params.initialMarketCapUSD` | `number` | The initial market cap in USD      |
+| `params.premineAmount`       | `bigint` | The amount of coins to be premined |
+| `params.slippagePercent?`    | `number` | The slippage percent               |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The ETH required to flaunch
+
+Inherited from
+
+ReadFlaunchSDK.ethRequiredToFlaunch
+
+---
+
+### fairLaunchCoinOnlyPosition
+
+▸ **fairLaunchCoinOnlyPosition**(`coinAddress`, `version?`): `Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Gets information about the coin-only position in a fair launch
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Promise<{flETHAmount: bigint, coinAmount: bigint, tickLower: number, tickUpper: number}> - Position details
+
+Inherited from
+
+ReadFlaunchSDK.fairLaunchCoinOnlyPosition
+
+---
+
+### fairLaunchDuration
+
+▸ **fairLaunchDuration**(`coinAddress`, `version?`): `Promise`\<`number` \| `bigint`\>
+
+Gets the duration of a fair launch for a given coin
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<`number` \| `bigint`\>
+
+Promise<number> - The duration in seconds (30 minutes for V1, variable for V1.1)
+
+Inherited from
+
+ReadFlaunchSDK.fairLaunchDuration
+
+---
+
+### fairLaunchETHOnlyPosition
+
+▸ **fairLaunchETHOnlyPosition**(`coinAddress`, `version?`): `Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Gets information about the ETH-only position in a fair launch
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<\{ `coinAmount`: `bigint` ; `flETHAmount`: `bigint` ; `tickLower`: `number` ; `tickUpper`: `number` }\>
+
+Promise<{flETHAmount: bigint, coinAmount: bigint, tickLower: number, tickUpper: number}> - Position details
+
+Inherited from
+
+ReadFlaunchSDK.fairLaunchETHOnlyPosition
+
+---
+
+### fairLaunchInfo
+
+▸ **fairLaunchInfo**(`coinAddress`, `version?`): `Promise`\<\{ `closed`: `boolean` ; `endsAt`: `bigint` ; `initialTick`: `number` ; `revenue`: `bigint` ; `startsAt`: `bigint` ; `supply`: `bigint` }\>
+
+Gets information about a fair launch for a given coin
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<\{ `closed`: `boolean` ; `endsAt`: `bigint` ; `initialTick`: `number` ; `revenue`: `bigint` ; `startsAt`: `bigint` ; `supply`: `bigint` }\>
+
+Fair launch information from the appropriate contract version
+
+Inherited from
+
+ReadFlaunchSDK.fairLaunchInfo
+
+---
+
+### flETHIsCurrencyZero
+
+▸ **flETHIsCurrencyZero**(`coinAddress`): `boolean`
+
+Determines if flETH is currency0 in the pool
+
+Parameters
+
+| Name          | Type             | Description             |
+| :------------ | :--------------- | :---------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin |
+
+Returns
+
+`boolean`
+
+boolean - True if flETH is currency0, false otherwise
+
+Inherited from
+
+ReadFlaunchSDK.flETHIsCurrencyZero
+
+---
+
+### flaunch
+
+▸ **flaunch**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Creates a new Flaunch on the specified version
+
+Parameters
+
+| Name     | Type            | Description                         |
+| :------- | :-------------- | :---------------------------------- |
+| `params` | `FlaunchParams` | Parameters for creating the Flaunch |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+---
+
+### flaunchIPFS
+
+▸ **flaunchIPFS**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Creates a new Flaunch with IPFS metadata and optional version specification
+
+Parameters
+
+| Name     | Type                | Description                                        |
+| :------- | :------------------ | :------------------------------------------------- |
+| `params` | `FlaunchIPFSParams` | Parameters for creating the Flaunch with IPFS data |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+---
+
+### flaunchIPFSWithRevenueManager
+
+▸ **flaunchIPFSWithRevenueManager**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Creates a new Flaunch with revenue manager configuration and IPFS metadata
+
+Parameters
+
+| Name     | Type                                  | Description                                                            |
+| :------- | :------------------------------------ | :--------------------------------------------------------------------- |
+| `params` | `FlaunchWithRevenueManagerIPFSParams` | Parameters for creating the Flaunch with revenue manager and IPFS data |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+**`Throws`**
+
+Error if FlaunchZap is not deployed on the current chain
+
+---
+
+### flaunchIPFSWithSplitManager
+
+▸ **flaunchIPFSWithSplitManager**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Creates a new Flaunch that splits the creator fees to the creator and a list of recipients, storing the token metadata on IPFS
+
+Parameters
+
+| Name     | Type                                | Description                                                                        |
+| :------- | :---------------------------------- | :--------------------------------------------------------------------------------- |
+| `params` | `FlaunchWithSplitManagerIPFSParams` | Parameters for creating the Flaunch with split manager including all IPFS metadata |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+---
+
+### flaunchWithRevenueManager
+
+▸ **flaunchWithRevenueManager**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Creates a new Flaunch with revenue manager configuration
+
+Parameters
+
+| Name     | Type                              | Description                                              |
+| :------- | :-------------------------------- | :------------------------------------------------------- |
+| `params` | `FlaunchWithRevenueManagerParams` | Parameters for creating the Flaunch with revenue manager |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+**`Throws`**
+
+Error if FlaunchZap is not deployed on the current chain
+
+---
+
+### flaunchWithSplitManager
+
+▸ **flaunchWithSplitManager**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Creates a new Flaunch that splits the creator fees to the creator and a list of recipients
+
+Parameters
+
+| Name     | Type                            | Description                                            |
+| :------- | :------------------------------ | :----------------------------------------------------- |
+| `params` | `FlaunchWithSplitManagerParams` | Parameters for creating the Flaunch with split manager |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+---
+
+### getBidWall
+
+▸ **getBidWall**(`version`): `ReadBidWall` \| `AnyBidWall` \| `ReadBidWallV1_1`
+
+Gets the bid wall address for a given version
+
+Parameters
+
+| Name      | Type             | Description                                 |
+| :-------- | :--------------- | :------------------------------------------ |
+| `version` | `FlaunchVersion` | The version to get the bid wall address for |
+
+Returns
+
+`ReadBidWall` \| `AnyBidWall` \| `ReadBidWallV1_1`
+
+Inherited from
+
+ReadFlaunchSDK.getBidWall
+
+---
+
+### getBidWallAddress
+
+▸ **getBidWallAddress**(`version`): \`0x$\{string}\`
+
+Parameters
+
+| Name      | Type             |
+| :-------- | :--------------- |
+| `version` | `FlaunchVersion` |
+
+Returns
+
+\`0x$\{string}\`
+
+Inherited from
+
+ReadFlaunchSDK.getBidWallAddress
+
+---
+
+### getBuyQuoteExactInput
+
+▸ **getBuyQuoteExactInput**(`coinAddress`, `amountIn`, `version?`): `Promise`\<`bigint`\>
+
+Gets a quote for buying tokens with an exact amount of ETH
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the token to buy  |
+| `amountIn`    | `bigint`         | -                                |
+| `version?`    | `FlaunchVersion` | Optional specific version to use |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The expected amount of tokens to receive
+
+Inherited from
+
+ReadFlaunchSDK.getBuyQuoteExactInput
+
+---
+
+### getBuyQuoteExactOutput
+
+▸ **getBuyQuoteExactOutput**(`coinAddress`, `amountOut`, `version?`): `Promise`\<`bigint`\>
+
+Gets a quote for buying an exact amount of tokens with ETH
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the token to buy  |
+| `amountOut`   | `bigint`         | -                                |
+| `version?`    | `FlaunchVersion` | Optional specific version to use |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The required amount of ETH to spend
+
+Inherited from
+
+ReadFlaunchSDK.getBuyQuoteExactOutput
+
+---
+
+### getCoinMetadata
+
+▸ **getCoinMetadata**(`coinAddress`): `Promise`\<`CoinMetadata` & \{ `symbol`: `string` }\>
+
+Retrieves metadata for a given Flaunch coin
+
+Parameters
+
+| Name          | Type             | Description             |
+| :------------ | :--------------- | :---------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin |
+
+Returns
+
+`Promise`\<`CoinMetadata` & \{ `symbol`: `string` }\>
+
+Promise<CoinMetadata & { symbol: string }> - The coin's metadata including name, symbol, description, and social links
+
+Inherited from
+
+ReadFlaunchSDK.getCoinMetadata
+
+---
+
+### getCoinMetadataFromTokenId
+
+▸ **getCoinMetadataFromTokenId**(`flaunch`, `tokenId`): `Promise`\<`CoinMetadata` & \{ `symbol`: `string` }\>
+
+Retrieves metadata for a given Flaunch coin using its token ID & Flaunch contract address
+
+Parameters
+
+| Name      | Type             | Description                         |
+| :-------- | :--------------- | :---------------------------------- |
+| `flaunch` | \`0x$\{string}\` | The address of the Flaunch contract |
+| `tokenId` | `bigint`         | The token ID of the coin            |
+
+Returns
+
+`Promise`\<`CoinMetadata` & \{ `symbol`: `string` }\>
+
+The coin's metadata including name, symbol, description, and social links
+
+Inherited from
+
+ReadFlaunchSDK.getCoinMetadataFromTokenId
+
+---
+
+### getCoinMetadataFromTokenIds
+
+▸ **getCoinMetadataFromTokenIds**(`params`, `batchSize?`, `batchDelay?`): `Promise`\<\{ `coinAddress`: \`0x$\{string}\` ; `collaborators`: `any` ; `description`: `any` ; `discordUrl`: `any` ; `external_link`: `any` ; `image`: `string` ; `name`: `string` ; `symbol`: `string` ; `telegramUrl`: `any` ; `twitterUrl`: `any` }[]\>
+
+Retrieves metadata for multiple Flaunch coins using their token IDs & Flaunch contract addresses
+
+Parameters
+
+| Name         | Type                                                     | Default value | Description                                                          |
+| :----------- | :------------------------------------------------------- | :------------ | :------------------------------------------------------------------- |
+| `params`     | \{ `flaunch`: \`0x$\{string}\` ; `tokenId`: `bigint` }[] | `undefined`   | An array of objects containing flaunch contract address and token ID |
+| `batchSize`  | `number`                                                 | `9`           | Optional, the number of ipfs requests to process in each batch       |
+| `batchDelay` | `number`                                                 | `500`         | Optional, the delay in milliseconds between batches                  |
+
+Returns
+
+`Promise`\<\{ `coinAddress`: \`0x$\{string}\` ; `collaborators`: `any` ; `description`: `any` ; `discordUrl`: `any` ; `external_link`: `any` ; `image`: `string` ; `name`: `string` ; `symbol`: `string` ; `telegramUrl`: `any` ; `twitterUrl`: `any` }[]\>
+
+An array of objects containing coin address, name, symbol, description, and social links
+
+Inherited from
+
+ReadFlaunchSDK.getCoinMetadataFromTokenIds
+
+---
+
+### getCoinVersion
+
+▸ **getCoinVersion**(`coinAddress`): `Promise`\<`FlaunchVersion`\>
+
+Determines the version of a Flaunch coin
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin to check |
+
+Returns
+
+`Promise`\<`FlaunchVersion`\>
+
+Promise<FlaunchVersion> - The version of the coin
+
+Inherited from
+
+ReadFlaunchSDK.getCoinVersion
+
+---
+
+### getETHUSDCPrice
+
+▸ **getETHUSDCPrice**(`drift?`): `Promise`\<`number`\>
+
+Gets the current ETH/USDC price
+
+Parameters
+
+| Name     | Type    | Description                                            |
+| :------- | :------ | :----------------------------------------------------- |
+| `drift?` | `Drift` | Optional drift instance to get price from Base Mainnet |
+
+Returns
+
+`Promise`\<`number`\>
+
+Promise<number> - The current ETH/USDC price
+
+Inherited from
+
+ReadFlaunchSDK.getETHUSDCPrice
+
+---
+
+### getFairLaunch
+
+▸ **getFairLaunch**(`version`): `ReadFairLaunch` \| `ReadFairLaunchV1_1`
+
+Gets the fair launch address for a given version
+
+Parameters
+
+| Name      | Type             | Description                                    |
+| :-------- | :--------------- | :--------------------------------------------- |
+| `version` | `FlaunchVersion` | The version to get the fair launch address for |
+
+Returns
+
+`ReadFairLaunch` \| `ReadFairLaunchV1_1`
+
+Inherited from
+
+ReadFlaunchSDK.getFairLaunch
+
+---
+
+### getFairLaunchAddress
+
+▸ **getFairLaunchAddress**(`version`): \`0x$\{string}\`
+
+Parameters
+
+| Name      | Type             |
+| :-------- | :--------------- |
+| `version` | `FlaunchVersion` |
+
+Returns
+
+\`0x$\{string}\`
+
+Inherited from
+
+ReadFlaunchSDK.getFairLaunchAddress
+
+---
+
+### getFlaunchingFee
+
+▸ **getFlaunchingFee**(`params`): `Promise`\<`bigint`\>
+
+Gets the flaunching fee for a given initial price and slippage percent
+
+Parameters
+
+| Name                         | Type             | Description                   |
+| :--------------------------- | :--------------- | :---------------------------- |
+| `params`                     | `Object`         | -                             |
+| `params.initialMarketCapUSD` | `number`         | The initial market cap in USD |
+| `params.sender`              | \`0x$\{string}\` | The address of the sender     |
+| `params.slippagePercent?`    | `number`         | The slippage percent          |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The flaunching fee
+
+Inherited from
+
+ReadFlaunchSDK.getFlaunchingFee
+
+---
+
+### getPermit2AllowanceAndNonce
+
+▸ **getPermit2AllowanceAndNonce**(`coinAddress`): `Promise`\<\{ `allowance`: `bigint` = amount; `nonce`: `number` }\>
+
+Gets the current Permit2 allowance and nonce for a coin
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin to check |
+
+Returns
+
+`Promise`\<\{ `allowance`: `bigint` = amount; `nonce`: `number` }\>
+
+Promise<{allowance: bigint, nonce: bigint}> - Current allowance and nonce
+
+---
+
+### getPermit2TypedData
+
+▸ **getPermit2TypedData**(`coinAddress`, `deadline?`): `Promise`\<\{ `permitSingle`: `PermitSingle` ; `typedData`: \{ `domain`: \{ `chainId`: `number` ; `name`: `string` ; `verifyingContract`: \`0x$\{string}\` } ; `message`: `PermitSingle` ; `primaryType`: `string` ; `types`: \{ `PermitDetails`: \{ `name`: `string` = "token"; `type`: `string` = "address" }[] = PERMIT_DETAILS; `PermitSingle`: \{ `name`: `string` = "details"; `type`: `string` = "PermitDetails" }[] } } }\>
+
+Gets the typed data for a Permit2 signature
+
+Parameters
+
+| Name          | Type             | Description                                             |
+| :------------ | :--------------- | :------------------------------------------------------ |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin to permit                       |
+| `deadline?`   | `bigint`         | Optional deadline for the permit (defaults to 10 years) |
+
+Returns
+
+`Promise`\<\{ `permitSingle`: `PermitSingle` ; `typedData`: \{ `domain`: \{ `chainId`: `number` ; `name`: `string` ; `verifyingContract`: \`0x$\{string}\` } ; `message`: `PermitSingle` ; `primaryType`: `string` ; `types`: \{ `PermitDetails`: \{ `name`: `string` = "token"; `type`: `string` = "address" }[] = PERMIT_DETAILS; `PermitSingle`: \{ `name`: `string` = "details"; `type`: `string` = "PermitDetails" }[] } } }\>
+
+The typed data object for signing
+
+---
+
+### getPositionManager
+
+▸ **getPositionManager**(`version`): `ReadFlaunchPositionManager` \| `ReadFlaunchPositionManagerV1_1` \| `ReadAnyPositionManager`
+
+Gets the position manager address for a given version
+
+Parameters
+
+| Name      | Type             | Description                                         |
+| :-------- | :--------------- | :-------------------------------------------------- |
+| `version` | `FlaunchVersion` | The version to get the position manager address for |
+
+Returns
+
+`ReadFlaunchPositionManager` \| `ReadFlaunchPositionManagerV1_1` \| `ReadAnyPositionManager`
+
+Inherited from
+
+ReadFlaunchSDK.getPositionManager
+
+---
+
+### getPositionManagerAddress
+
+▸ **getPositionManagerAddress**(`version`): \`0x$\{string}\`
+
+Parameters
+
+| Name      | Type             |
+| :-------- | :--------------- |
+| `version` | `FlaunchVersion` |
+
+Returns
+
+\`0x$\{string}\`
+
+Inherited from
+
+ReadFlaunchSDK.getPositionManagerAddress
+
+---
+
+### getSellQuoteExactInput
+
+▸ **getSellQuoteExactInput**(`coinAddress`, `amountIn`, `version?`): `Promise`\<`bigint`\>
+
+Gets a quote for selling an exact amount of tokens for ETH
+
+Parameters
+
+| Name          | Type             | Description                        |
+| :------------ | :--------------- | :--------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the token to sell   |
+| `amountIn`    | `bigint`         | The exact amount of tokens to sell |
+| `version?`    | `FlaunchVersion` | Optional specific version to use   |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The expected amount of ETH to receive
+
+Inherited from
+
+ReadFlaunchSDK.getSellQuoteExactInput
+
+---
+
+### importMemecoin
+
+▸ **importMemecoin**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Imports a memecoin into the TokenImporter
+
+Parameters
+
+| Name                                 | Type             | Description                                         |
+| :----------------------------------- | :--------------- | :-------------------------------------------------- |
+| `params`                             | `Object`         | -                                                   |
+| `params.creatorFeeAllocationPercent` | `number`         | The creator fee allocation percentage               |
+| `params.initialMarketCapUSD`         | `number`         | The initial market cap in USD                       |
+| `params.memecoin`                    | \`0x$\{string}\` | The address of the memecoin to import               |
+| `params.verifier?`                   | `Verifier`       | Optional verifier to use for importing the memecoin |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+---
+
+### initialSqrtPriceX96
+
+▸ **initialSqrtPriceX96**(`params`): `Promise`\<`bigint`\>
+
+Parameters
+
+| Name                         | Type             |
+| :--------------------------- | :--------------- |
+| `params`                     | `Object`         |
+| `params.coinAddress`         | \`0x$\{string}\` |
+| `params.initialMarketCapUSD` | `number`         |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Inherited from
+
+ReadFlaunchSDK.initialSqrtPriceX96
+
+---
+
+### initialTick
+
+▸ **initialTick**(`coinAddress`, `version?`): `Promise`\<`number`\>
+
+Gets the initial tick for a fair launch
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<`number`\>
+
+Promise<number> - The initial tick value
+
+Inherited from
+
+ReadFlaunchSDK.initialTick
+
+---
+
+### isFairLaunchActive
+
+▸ **isFairLaunchActive**(`coinAddress`, `version?`): `Promise`\<`boolean`\>
+
+Checks if a fair launch is currently active for a given coin
+
+Parameters
+
+| Name          | Type             | Description                                                                         |
+| :------------ | :--------------- | :---------------------------------------------------------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin                                                             |
+| `version?`    | `FlaunchVersion` | Optional specific version to use. If not provided, will be determined automatically |
+
+Returns
+
+`Promise`\<`boolean`\>
+
+Promise<boolean> - True if fair launch is active, false otherwise
+
+Inherited from
+
+ReadFlaunchSDK.isFairLaunchActive
+
+---
+
+### isValidCoin
+
+▸ **isValidCoin**(`coinAddress`): `Promise`\<`boolean`\>
+
+Checks if a given coin address is a valid Flaunch coin (supports all versions)
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin to check |
+
+Returns
+
+`Promise`\<`boolean`\>
+
+Promise<boolean> - True if the coin is valid, false otherwise
+
+Inherited from
+
+ReadFlaunchSDK.isValidCoin
+
+---
+
+### parseSwapTx
+
+▸ **parseSwapTx**\<`T`\>(`params`): `Promise`\<`T` extends `boolean` ? `undefined` \| `GenericBuySwapLog` \| `GenericSellSwapLog` : `undefined` \| `GenericBaseSwapLog`\>
+
+Parses a transaction hash to extract PoolSwap events and return parsed swap data
+
+Type parameters
+
+| Name | Type                                           |
+| :--- | :--------------------------------------------- |
+| `T`  | extends `undefined` \| `boolean` = `undefined` |
+
+Parameters
+
+| Name                          | Type             | Description                                        |
+| :---------------------------- | :--------------- | :------------------------------------------------- |
+| `params`                      | `Object`         | Object containing parsing parameters               |
+| `params.flETHIsCurrencyZero?` | `T`              | Whether flETH is currency 0 in the pool (optional) |
+| `params.txHash`               | \`0x$\{string}\` | The transaction hash to parse                      |
+| `params.version`              | `FlaunchVersion` | The Flaunch version to use for parsing             |
+
+Returns
+
+`Promise`\<`T` extends `boolean` ? `undefined` \| `GenericBuySwapLog` \| `GenericSellSwapLog` : `undefined` \| `GenericBaseSwapLog`\>
+
+Parsed swap log or undefined if no PoolSwap event found.
+If flETHIsCurrencyZero is provided, returns typed swap data with BUY/SELL information.
+If flETHIsCurrencyZero is undefined, returns basic swap log without parsed delta.
+
+Inherited from
+
+ReadFlaunchSDK.parseSwapTx
+
+---
+
+### pollPoolCreatedNow
+
+▸ **pollPoolCreatedNow**(`version?`): `undefined` \| `Promise`\<`void`\>
+
+Polls for current pool creation events
+
+Parameters
+
+| Name      | Type             | Default value         | Description                                  |
+| :-------- | :--------------- | :-------------------- | :------------------------------------------- |
+| `version` | `FlaunchVersion` | `FlaunchVersion.V1_1` | Version of Flaunch to use (defaults to V1_1) |
+
+Returns
+
+`undefined` \| `Promise`\<`void`\>
+
+Current pool creation events or undefined if polling is not available
+
+Inherited from
+
+ReadFlaunchSDK.pollPoolCreatedNow
+
+---
+
+### pollPoolSwapNow
+
+▸ **pollPoolSwapNow**(`version?`): `undefined` \| `Promise`\<`void`\>
+
+Polls for current pool swap events
+
+Parameters
+
+| Name      | Type             | Default value         | Description                                  |
+| :-------- | :--------------- | :-------------------- | :------------------------------------------- |
+| `version` | `FlaunchVersion` | `FlaunchVersion.V1_1` | Version of Flaunch to use (defaults to V1_1) |
+
+Returns
+
+`undefined` \| `Promise`\<`void`\>
+
+Current pool swap events or undefined if polling is not available
+
+Inherited from
+
+ReadFlaunchSDK.pollPoolSwapNow
+
+---
+
+### poolId
+
+▸ **poolId**(`coinAddress`, `version?`): `Promise`\<\`0x$\{string}\`\>
+
+Gets the pool ID for a given coin
+
+Parameters
+
+| Name          | Type             | Description                      |
+| :------------ | :--------------- | :------------------------------- |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin          |
+| `version?`    | `FlaunchVersion` | Optional specific version to use |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Promise<string> - The pool ID
+
+Inherited from
+
+ReadFlaunchSDK.poolId
+
+---
+
+### positionInfo
+
+▸ **positionInfo**(`params`): `Promise`\<\{ `feeGrowthInside0LastX128`: `bigint` ; `feeGrowthInside1LastX128`: `bigint` ; `liquidity`: `bigint` } \| \{ `feeGrowthInside0LastX128`: `bigint` ; `feeGrowthInside1LastX128`: `bigint` ; `liquidity`: `bigint` }\>
+
+Gets information about a liquidity position
+
+Parameters
+
+| Name     | Type                 | Description                           |
+| :------- | :------------------- | :------------------------------------ |
+| `params` | `PositionInfoParams` | Parameters for querying position info |
+
+Returns
+
+`Promise`\<\{ `feeGrowthInside0LastX128`: `bigint` ; `feeGrowthInside1LastX128`: `bigint` ; `liquidity`: `bigint` } \| \{ `feeGrowthInside0LastX128`: `bigint` ; `feeGrowthInside1LastX128`: `bigint` ; `liquidity`: `bigint` }\>
+
+Position information from the state view contract
+
+Inherited from
+
+ReadFlaunchSDK.positionInfo
+
+---
+
+### referralBalance
+
+▸ **referralBalance**(`recipient`, `coinAddress`): `Promise`\<`bigint`\>
+
+Gets the balance of a recipient for a given coin
+
+Parameters
+
+| Name          | Type             | Description                           |
+| :------------ | :--------------- | :------------------------------------ |
+| `recipient`   | \`0x$\{string}\` | The address of the recipient to check |
+| `coinAddress` | \`0x$\{string}\` | The address of the coin               |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The balance of the recipient
+
+Inherited from
+
+ReadFlaunchSDK.referralBalance
+
+---
+
+### revenueManagerAllTokensByCreator
+
+▸ **revenueManagerAllTokensByCreator**(`params`): `Promise`\<readonly \{ `flaunch`: \`0x$\{string}\` ; `tokenId`: `bigint` }[]\>
+
+Gets all tokens created by a specific creator address
+
+Parameters
+
+| Name                           | Type             | Description                                    |
+| :----------------------------- | :--------------- | :--------------------------------------------- |
+| `params`                       | `Object`         | Parameters for querying tokens by creator      |
+| `params.creator`               | \`0x$\{string}\` | The address of the creator to query tokens for |
+| `params.revenueManagerAddress` | \`0x$\{string}\` | The address of the revenue manager             |
+| `params.sortByDesc?`           | `boolean`        | Whether to sort the tokens by descending order |
+
+Returns
+
+`Promise`\<readonly \{ `flaunch`: \`0x$\{string}\` ; `tokenId`: `bigint` }[]\>
+
+Promise<Array<{flaunch: Address, tokenId: bigint}>> - Array of token objects containing flaunch address and token ID
+
+Inherited from
+
+ReadFlaunchSDK.revenueManagerAllTokensByCreator
+
+---
+
+### revenueManagerAllTokensInManager
+
+▸ **revenueManagerAllTokensInManager**(`params`): `Promise`\<\{ `flaunch`: \`0x$\{string}\` ; `tokenId`: `bigint` }[]\>
+
+Gets all tokens currently managed by a revenue manager
+
+Parameters
+
+| Name                           | Type             | Description                                                          |
+| :----------------------------- | :--------------- | :------------------------------------------------------------------- |
+| `params`                       | `Object`         | Parameters for querying tokens in manager                            |
+| `params.revenueManagerAddress` | \`0x$\{string}\` | The address of the revenue manager                                   |
+| `params.sortByDesc?`           | `boolean`        | Optional boolean to sort tokens in descending order (default: false) |
+
+Returns
+
+`Promise`\<\{ `flaunch`: \`0x$\{string}\` ; `tokenId`: `bigint` }[]\>
+
+Promise<Array<{flaunch: Address, tokenId: bigint}>> - Array of token objects containing flaunch address and token ID
+
+Inherited from
+
+ReadFlaunchSDK.revenueManagerAllTokensInManager
+
+---
+
+### revenueManagerBalance
+
+▸ **revenueManagerBalance**(`params`): `Promise`\<`bigint`\>
+
+Gets the claimable balance of ETH for the recipient from a revenue manager
+
+Parameters
+
+| Name                           | Type             | Description                           |
+| :----------------------------- | :--------------- | :------------------------------------ |
+| `params`                       | `Object`         | Parameters for checking the balance   |
+| `params.recipient`             | \`0x$\{string}\` | The address of the recipient to check |
+| `params.revenueManagerAddress` | \`0x$\{string}\` | The address of the revenue manager    |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The claimable balance of ETH
+
+Inherited from
+
+ReadFlaunchSDK.revenueManagerBalance
+
+---
+
+### revenueManagerCreatorClaim
+
+▸ **revenueManagerCreatorClaim**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Claims the total creator's share of the revenue from a revenue manager
+
+Parameters
+
+| Name                           | Type             | Description                                                |
+| :----------------------------- | :--------------- | :--------------------------------------------------------- |
+| `params`                       | `Object`         | Parameters for claiming the creator's share of the revenue |
+| `params.revenueManagerAddress` | \`0x$\{string}\` | -                                                          |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+---
+
+### revenueManagerCreatorClaimForTokens
+
+▸ **revenueManagerCreatorClaimForTokens**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Claims the creator's share of the revenue from specific flaunch tokens
+
+Parameters
+
+| Name                           | Type                                                     | Description                                                |
+| :----------------------------- | :------------------------------------------------------- | :--------------------------------------------------------- |
+| `params`                       | `Object`                                                 | Parameters for claiming the creator's share of the revenue |
+| `params.flaunchTokens`         | \{ `flaunch`: \`0x$\{string}\` ; `tokenId`: `bigint` }[] | -                                                          |
+| `params.revenueManagerAddress` | \`0x$\{string}\`                                         | -                                                          |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+---
+
+### revenueManagerProtocolBalance
+
+▸ **revenueManagerProtocolBalance**(`revenueManagerAddress`): `Promise`\<`bigint`\>
+
+Gets the claimable balance of ETH for the protocol from a revenue manager
+
+Parameters
+
+| Name                    | Type             | Description                        |
+| :---------------------- | :--------------- | :--------------------------------- |
+| `revenueManagerAddress` | \`0x$\{string}\` | The address of the revenue manager |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The claimable balance of ETH
+
+Inherited from
+
+ReadFlaunchSDK.revenueManagerProtocolBalance
+
+---
+
+### revenueManagerProtocolClaim
+
+▸ **revenueManagerProtocolClaim**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Claims the protocol's share of the revenue
+
+Parameters
+
+| Name                           | Type             | Description                                                 |
+| :----------------------------- | :--------------- | :---------------------------------------------------------- |
+| `params`                       | `Object`         | Parameters for claiming the protocol's share of the revenue |
+| `params.revenueManagerAddress` | \`0x$\{string}\` | -                                                           |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+---
+
+### revenueManagerTokensCount
+
+▸ **revenueManagerTokensCount**(`revenueManagerAddress`): `Promise`\<`bigint`\>
+
+Gets the total number of tokens managed by a revenue manager
+
+Parameters
+
+| Name                    | Type             | Description                        |
+| :---------------------- | :--------------- | :--------------------------------- |
+| `revenueManagerAddress` | \`0x$\{string}\` | The address of the revenue manager |
+
+Returns
+
+`Promise`\<`bigint`\>
+
+Promise<bigint> - The total count of tokens
+
+Inherited from
+
+ReadFlaunchSDK.revenueManagerTokensCount
+
+---
+
+### sellCoin
+
+▸ **sellCoin**(`params`, `version?`): `Promise`\<\`0x$\{string}\`\>
+
+Sells a coin for ETH
+
+Parameters
+
+| Name       | Type             | Description                                                                           |
+| :--------- | :--------------- | :------------------------------------------------------------------------------------ |
+| `params`   | `SellCoinParams` | Parameters for selling the coin including amount, slippage, permit data, and referrer |
+| `version?` | `FlaunchVersion` | Optional specific version to use. If not provided, will determine automatically       |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response for the sell operation
+
+---
+
+### setIPFSResolver
+
+▸ **setIPFSResolver**(`resolverFn`): `void`
+
+Sets a custom IPFS resolver function
+
+Parameters
+
+| Name         | Type                               | Description                          |
+| :----------- | :--------------------------------- | :----------------------------------- |
+| `resolverFn` | (`ipfsHash`: `string`) => `string` | Custom function to resolve IPFS URIs |
+
+Returns
+
+`void`
+
+**`Dev`**
+
+this is used to resolve IPFS hash to a gateway URL
+eg: input: Qabc, output: https://ipfs.io/ipfs/Qabc
+
+Inherited from
+
+ReadFlaunchSDK.setIPFSResolver
+
+---
+
+### tokenImporterVerifyMemecoin
+
+▸ **tokenImporterVerifyMemecoin**(`memecoin`): `Promise`\<\{ `isValid`: `boolean` ; `verifier`: \`0x$\{string}\` }\>
+
+Verifies if a memecoin is valid for importing
+
+Parameters
+
+| Name       | Type             | Description                           |
+| :--------- | :--------------- | :------------------------------------ |
+| `memecoin` | \`0x$\{string}\` | The address of the memecoin to import |
+
+Returns
+
+`Promise`\<\{ `isValid`: `boolean` ; `verifier`: \`0x$\{string}\` }\>
+
+Promise<{ isValid: boolean; verifier: Address }> - The result of the verification
+
+Inherited from
+
+ReadFlaunchSDK.tokenImporterVerifyMemecoin
+
+---
+
+### watchPoolCreated
+
+▸ **watchPoolCreated**(`params`, `version?`): `Promise`\<\{ `cleanup`: () => `void` ; `pollPoolCreatedNow`: () => `Promise`\<`void`\> = pollEvents }\>
+
+Watches for pool creation events
+
+Parameters
+
+| Name      | Type                     | Default value         | Description                                  |
+| :-------- | :----------------------- | :-------------------- | :------------------------------------------- |
+| `params`  | `WatchPoolCreatedParams` | `undefined`           | Parameters for watching pool creation        |
+| `version` | `FlaunchVersion`         | `FlaunchVersion.V1_1` | Version of Flaunch to use (defaults to V1_1) |
+
+Returns
+
+`Promise`\<\{ `cleanup`: () => `void` ; `pollPoolCreatedNow`: () => `Promise`\<`void`\> = pollEvents }\>
+
+Subscription to pool creation events
+
+Inherited from
+
+ReadFlaunchSDK.watchPoolCreated
+
+---
+
+### watchPoolSwap
+
+▸ **watchPoolSwap**(`params`, `version?`): `Promise`\<\{ `cleanup`: () => `void` ; `pollPoolSwapNow`: () => `Promise`\<`void`\> = pollEvents }\>
+
+Watches for pool swap events
+
+Parameters
+
+| Name      | Type                  | Default value         | Description                                                       |
+| :-------- | :-------------------- | :-------------------- | :---------------------------------------------------------------- |
+| `params`  | `WatchPoolSwapParams` | `undefined`           | Parameters for watching pool swaps including optional coin filter |
+| `version` | `FlaunchVersion`      | `FlaunchVersion.V1_1` | Version of Flaunch to use (defaults to V1_1)                      |
+
+Returns
+
+`Promise`\<\{ `cleanup`: () => `void` ; `pollPoolSwapNow`: () => `Promise`\<`void`\> = pollEvents }\>
+
+Subscription to pool swap events
+
+Inherited from
+
+ReadFlaunchSDK.watchPoolSwap
+
+---
+
+### withdrawCreatorRevenue
+
+▸ **withdrawCreatorRevenue**(`params`): `Promise`\<\`0x$\{string}\`\>
+
+Withdraws the creator's share of the revenue
+
+Parameters
+
+| Name                | Type             | Description                                                                                     |
+| :------------------ | :--------------- | :---------------------------------------------------------------------------------------------- |
+| `params`            | `Object`         | Parameters for withdrawing the creator's share of the revenue                                   |
+| `params.isV1?`      | `boolean`        | Optional boolean to withdraw from V1. V1.1 & AnyPositionManager use the same FeeEscrow contract |
+| `params.recipient?` | \`0x$\{string}\` | The address to withdraw the revenue to. Defaults to the connected wallet                        |
+
+Returns
+
+`Promise`\<\`0x$\{string}\`\>
+
+Transaction response
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / FlaunchVersion
+
+# Enumeration: FlaunchVersion
+
+Enumeration of Flaunch contract versions
+
+## Table of contents
+
+### Enumeration Members
+
+- ANY
+- V1
+- V1_1
+- V1_1_1
+
+## Enumeration Members
+
+### ANY
+
+• **ANY** = `"ANY"`
+
+---
+
+### V1
+
+• **V1** = `"V1"`
+
+---
+
+### V1_1
+
+• **V1_1** = `"V1_1"`
+
+---
+
+### V1_1_1
+
+• **V1_1_1** = `"V1_1_1"`
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / Verifier
+
+# Enumeration: Verifier
+
+Enumeration of Verifiers for TokenImporter
+
+## Table of contents
+
+### Enumeration Members
+
+- CLANKER
+- DOPPLER
+- VIRTUALS
+- WHITELIST
+- ZORA
+
+## Enumeration Members
+
+### CLANKER
+
+• **CLANKER** = `"clanker"`
+
+---
+
+### DOPPLER
+
+• **DOPPLER** = `"doppler"`
+
+---
+
+### VIRTUALS
+
+• **VIRTUALS** = `"virtuals"`
+
+---
+
+### WHITELIST
+
+• **WHITELIST** = `"whitelist"`
+
+---
+
+### ZORA
+
+• **ZORA** = `"zora"`
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / Addresses
+
+# Interface: Addresses
+
+## Indexable
+
+▪ [chainId: `number`]: `Address`
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / BuySwapData
+
+# Interface: BuySwapData
+
+## Table of contents
+
+### Properties
+
+- delta
+- type
+
+## Properties
+
+### delta
+
+• **delta**: `Object`
+
+Type declaration
+
+| Name          | Type       |
+| :------------ | :--------- |
+| `coinsBought` | `bigint`   |
+| `fees`        | `SwapFees` |
+| `flETHSold`   | `bigint`   |
+
+---
+
+### type
+
+• **type**: `"BUY"`
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / CoinMetadata
+
+# Interface: CoinMetadata
+
+## Table of contents
+
+### Properties
+
+- collaborators
+- description
+- discordUrl
+- external_link
+- image
+- name
+- telegramUrl
+- twitterUrl
+
+## Properties
+
+### collaborators
+
+• **collaborators**: `string`[]
+
+---
+
+### description
+
+• **description**: `string`
+
+---
+
+### discordUrl
+
+• **discordUrl**: `string`
+
+---
+
+### external_link
+
+• **external_link**: `string`
+
+---
+
+### image
+
+• **image**: `string`
+
+---
+
+### name
+
+• **name**: `string`
+
+---
+
+### telegramUrl
+
+• **telegramUrl**: `string`
+
+---
+
+### twitterUrl
+
+• **twitterUrl**: `string`
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / IPFSParams
+
+# Interface: IPFSParams
+
+## Table of contents
+
+### Properties
+
+- metadata
+- pinataConfig
+
+## Properties
+
+### metadata
+
+• **metadata**: `Object`
+
+Type declaration
+
+| Name           | Type     |
+| :------------- | :------- |
+| `base64Image`  | `string` |
+| `description`  | `string` |
+| `discordUrl?`  | `string` |
+| `telegramUrl?` | `string` |
+| `twitterUrl?`  | `string` |
+| `websiteUrl?`  | `string` |
+
+---
+
+### pinataConfig
+
+• **pinataConfig**: `PinataConfig`
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / PinataConfig
+
+# Interface: PinataConfig
+
+## Table of contents
+
+### Properties
+
+- jwt
+
+## Properties
+
+### jwt
+
+• **jwt**: `string`
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / PoolKey
+
+# Interface: PoolKey
+
+## Table of contents
+
+### Properties
+
+- currency0
+- currency1
+- fee
+- hooks
+- tickSpacing
+
+## Properties
+
+### currency0
+
+• **currency0**: \`0x$\{string}\`
+
+---
+
+### currency1
+
+• **currency1**: \`0x$\{string}\`
+
+---
+
+### fee
+
+• **fee**: `number`
+
+---
+
+### hooks
+
+• **hooks**: \`0x$\{string}\`
+
+---
+
+### tickSpacing
+
+• **tickSpacing**: `number`
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / SellSwapData
+
+# Interface: SellSwapData
+
+## Table of contents
+
+### Properties
+
+- delta
+- type
+
+## Properties
+
+### delta
+
+• **delta**: `Object`
+
+Type declaration
+
+| Name          | Type       |
+| :------------ | :--------- |
+| `coinsSold`   | `bigint`   |
+| `fees`        | `SwapFees` |
+| `flETHBought` | `bigint`   |
+
+---
+
+### type
+
+• **type**: `"SELL"`
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / SwapFees
+
+# Interface: SwapFees
+
+## Table of contents
+
+### Properties
+
+- amount
+- isInFLETH
+
+## Properties
+
+### amount
+
+• **amount**: `bigint`
+
+---
+
+### isInFLETH
+
+• **isInFLETH**: `boolean`
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports / SwapLogArgs
+
+# Interface: SwapLogArgs
+
+## Table of contents
+
+### Properties
+
+- flAmount0
+- flAmount1
+- flFee0
+- flFee1
+- ispAmount0
+- ispAmount1
+- ispFee0
+- ispFee1
+- uniAmount0
+- uniAmount1
+- uniFee0
+- uniFee1
+
+## Properties
+
+### flAmount0
+
+• **flAmount0**: `bigint`
+
+---
+
+### flAmount1
+
+• **flAmount1**: `bigint`
+
+---
+
+### flFee0
+
+• **flFee0**: `bigint`
+
+---
+
+### flFee1
+
+• **flFee1**: `bigint`
+
+---
+
+### ispAmount0
+
+• **ispAmount0**: `bigint`
+
+---
+
+### ispAmount1
+
+• **ispAmount1**: `bigint`
+
+---
+
+### ispFee0
+
+• **ispFee0**: `bigint`
+
+---
+
+### ispFee1
+
+• **ispFee1**: `bigint`
+
+---
+
+### uniAmount0
+
+• **uniAmount0**: `bigint`
+
+---
+
+### uniAmount1
+
+• **uniAmount1**: `bigint`
+
+---
+
+### uniFee0
+
+• **uniFee0**: `bigint`
+
+---
+
+### uniFee1
+
+• **uniFee1**: `bigint`
+
+---
+
+@flaunch/sdk - v0.8.2 / Exports
+
+# @flaunch/sdk - v0.8.2
+
+## Table of contents
+
+### Enumerations
+
+- FlaunchVersion
+- Verifier
+
+### Classes
+
+- ReadFlaunchSDK
+- ReadWriteFlaunchSDK
+
+### Interfaces
+
+- Addresses
+- BuySwapData
+- CoinMetadata
+- IPFSParams
+- PinataConfig
+- PoolKey
+- SellSwapData
+- SwapFees
+- SwapLogArgs
+
+### Type Aliases
+
+- BaseSwapLog
+- BuySwapLog
+- CreateFlaunchParams
+- ParsedSwapData
+- PermitDetails
+- PermitSingle
+- PoolCreatedLogs
+- PoolSwapLog
+- SellSwapLog
+
+### Variables
+
+- AddressFeeSplitManagerAddress
+- AnyBidWallAddress
+- AnyFlaunchAddress
+- AnyPositionManagerAddress
+- BidWallAddress
+- BidWallV1_1Address
+- ClankerWorldVerifierAddress
+- DopplerVerifierAddress
+- FLETHAddress
+- FLETHHooksAddress
+- FairLaunchAddress
+- FairLaunchV1_1Address
+- FastFlaunchZapAddress
+- FeeEscrowAddress
+- FlaunchAddress
+- FlaunchPositionManagerAddress
+- FlaunchPositionManagerV1_1Address
+- FlaunchSDK
+- FlaunchV1_1Address
+- FlaunchZapAddress
+- PERMIT_DETAILS
+- PERMIT_TYPES
+- Permit2Address
+- PoolManagerAddress
+- QuoterAddress
+- ReferralEscrowAddress
+- RevenueManagerAddress
+- StateViewAddress
+- TICK_SPACING
+- TickFinder
+- TokenImporterAddress
+- TreasuryManagerFactoryAddress
+- USDCETHPoolKeys
+- UniversalRouterAddress
+- VirtualsVerifierAddress
+- WhitelistVerifierAddress
+- ZoraVerifierAddress
+- chainIdToChain
+
+### Functions
+
+- bytes32ToUint256
+- calculateUnderlyingTokenBalances
+- createDrift
+- createFlaunch
+- ethToMemecoin
+- generateTokenUri
+- getAmountWithSlippage
+- getPermit2TypedData
+- getPoolId
+- getSqrtPriceX96FromTick
+- getValidTick
+- memecoinToEthWithPermit2
+- orderPoolKey
+- parseSwapData
+- resolveIPFS
+- uint256ToBytes32
+- uploadFileToIPFS
+- uploadImageToIPFS
+- uploadJsonToIPFS
+
+## Type Aliases
+
+### BaseSwapLog
+
+Ƭ **BaseSwapLog**: `EventLog`\<`FlaunchPositionManagerABI`, `"PoolSwap"`\> & \{ `timestamp`: `number` }
+
+---
+
+### BuySwapLog
+
+Ƭ **BuySwapLog**: `BaseSwapLog` & \{ `delta`: \{ `coinsBought`: `bigint` ; `fees`: \{ `amount`: `bigint` ; `isInFLETH`: `boolean` } ; `flETHSold`: `bigint` } ; `type`: `"BUY"` }
+
+---
+
+### CreateFlaunchParams
+
+Ƭ **CreateFlaunchParams**: `Object`
+
+Type declaration
+
+| Name            | Type           |
+| :-------------- | :------------- |
+| `publicClient`  | `PublicClient` |
+| `walletClient?` | `WalletClient` |
+
+---
+
+### ParsedSwapData
+
+Ƭ **ParsedSwapData**: `BuySwapData` \| `SellSwapData`
+
+---
+
+### PermitDetails
+
+Ƭ **PermitDetails**: `Object`
+
+Type declaration
+
+| Name         | Type      |
+| :----------- | :-------- |
+| `amount`     | `bigint`  |
+| `expiration` | `number`  |
+| `nonce`      | `number`  |
+| `token`      | `Address` |
+
+---
+
+### PermitSingle
+
+Ƭ **PermitSingle**: `Object`
+
+Type declaration
+
+| Name          | Type            |
+| :------------ | :-------------- |
+| `details`     | `PermitDetails` |
+| `sigDeadline` | `bigint`        |
+| `spender`     | `Address`       |
+
+---
+
+### PoolCreatedLogs
+
+Ƭ **PoolCreatedLogs**: `PoolCreatedLog`[]
+
+---
+
+### PoolSwapLog
+
+Ƭ **PoolSwapLog**: `BuySwapLog` \| `SellSwapLog` \| `BaseSwapLog`
+
+---
+
+### SellSwapLog
+
+Ƭ **SellSwapLog**: `BaseSwapLog` & \{ `delta`: \{ `coinsSold`: `bigint` ; `fees`: \{ `amount`: `bigint` ; `isInFLETH`: `boolean` } ; `flETHBought`: `bigint` } ; `type`: `"SELL"` }
+
+## Variables
+
+### AddressFeeSplitManagerAddress
+
+• `Const` **AddressFeeSplitManagerAddress**: `Addresses`
+
+---
+
+### AnyBidWallAddress
+
+• `Const` **AnyBidWallAddress**: `Addresses`
+
+---
+
+### AnyFlaunchAddress
+
+• `Const` **AnyFlaunchAddress**: `Addresses`
+
+---
+
+### AnyPositionManagerAddress
+
+• `Const` **AnyPositionManagerAddress**: `Addresses`
+
+---
+
+### BidWallAddress
+
+• `Const` **BidWallAddress**: `Addresses`
+
+---
+
+### BidWallV1_1Address
+
+• `Const` **BidWallV1_1Address**: `Addresses`
+
+---
+
+### ClankerWorldVerifierAddress
+
+• `Const` **ClankerWorldVerifierAddress**: `Addresses`
+
+---
+
+### DopplerVerifierAddress
+
+• `Const` **DopplerVerifierAddress**: `Addresses`
+
+---
+
+### FLETHAddress
+
+• `Const` **FLETHAddress**: `Addresses`
+
+---
+
+### FLETHHooksAddress
+
+• `Const` **FLETHHooksAddress**: `Addresses`
+
+---
+
+### FairLaunchAddress
+
+• `Const` **FairLaunchAddress**: `Addresses`
+
+---
+
+### FairLaunchV1_1Address
+
+• `Const` **FairLaunchV1_1Address**: `Addresses`
+
+---
+
+### FastFlaunchZapAddress
+
+• `Const` **FastFlaunchZapAddress**: `Addresses`
+
+---
+
+### FeeEscrowAddress
+
+• `Const` **FeeEscrowAddress**: `Addresses`
+
+========
+
+---
+
+### FlaunchAddress
+
+• `Const` **FlaunchAddress**: `Addresses`
+
+---
+
+### FlaunchPositionManagerAddress
+
+• `Const` **FlaunchPositionManagerAddress**: `Addresses`
+
+---
+
+### FlaunchPositionManagerV1_1Address
+
+• `Const` **FlaunchPositionManagerV1_1Address**: `Addresses`
+
+---
+
+### FlaunchSDK
+
+• `Const` **FlaunchSDK**: `Object`
+
+Type declaration
+
+| Name                  | Type                         |
+| :-------------------- | :--------------------------- |
+| `ReadFlaunchSDK`      | typeof `ReadFlaunchSDK`      |
+| `ReadWriteFlaunchSDK` | typeof `ReadWriteFlaunchSDK` |
+
+---
+
+### FlaunchV1_1Address
+
+• `Const` **FlaunchV1_1Address**: `Addresses`
+
+---
+
+### FlaunchZapAddress
+
+• `Const` **FlaunchZapAddress**: `Addresses`
+
+---
+
+### PERMIT_DETAILS
+
+• `Const` **PERMIT_DETAILS**: \{ `name`: `string` = "token"; `type`: `string` = "address" }[]
+
+---
+
+### PERMIT_TYPES
+
+• `Const` **PERMIT_TYPES**: `Object`
+
+Type declaration
+
+| Name            | Type                                                                    |
+| :-------------- | :---------------------------------------------------------------------- |
+| `PermitDetails` | \{ `name`: `string` = "token"; `type`: `string` = "address" }[]         |
+| `PermitSingle`  | \{ `name`: `string` = "details"; `type`: `string` = "PermitDetails" }[] |
+
+---
+
+### Permit2Address
+
+• `Const` **Permit2Address**: `Addresses`
+
+---
+
+### PoolManagerAddress
+
+• `Const` **PoolManagerAddress**: `Addresses`
+
+---
+
+### QuoterAddress
+
+• `Const` **QuoterAddress**: `Addresses`
+
+---
+
+### ReferralEscrowAddress
+
+• `Const` **ReferralEscrowAddress**: `Addresses`
+
+---
+
+### RevenueManagerAddress
+
+• `Const` **RevenueManagerAddress**: `Addresses`
+
+---
+
+### StateViewAddress
+
+• `Const` **StateViewAddress**: `Addresses`
+
+---
+
+### TICK_SPACING
+
+• `Const` **TICK_SPACING**: `60`
+
+---
+
+### TickFinder
+
+• `Const` **TickFinder**: `Object`
+
+Type declaration
+
+| Name       | Type     |
+| :--------- | :------- |
+| `MAX_TICK` | `number` |
+| `MIN_TICK` | `number` |
+
+---
+
+### TokenImporterAddress
+
+• `Const` **TokenImporterAddress**: `Addresses`
+
+Verifiers
+
+---
+
+### TreasuryManagerFactoryAddress
+
+• `Const` **TreasuryManagerFactoryAddress**: `Addresses`
+
+---
+
+### USDCETHPoolKeys
+
+• `Const` **USDCETHPoolKeys**: `Object`
+
+Index signature
+
+▪ [chainId: `number`]: `PoolKey`
+
+---
+
+### UniversalRouterAddress
+
+• `Const` **UniversalRouterAddress**: `Addresses`
+
+---
+
+### VirtualsVerifierAddress
+
+• `Const` **VirtualsVerifierAddress**: `Addresses`
+
+---
+
+### WhitelistVerifierAddress
+
+• `Const` **WhitelistVerifierAddress**: `Addresses`
+
+---
+
+### ZoraVerifierAddress
+
+• `Const` **ZoraVerifierAddress**: `Addresses`
+
+---
+
+### chainIdToChain
+
+• `Const` **chainIdToChain**: `Object`
+
+Index signature
+
+▪ [key: `number`]: `Chain`
+
+## Functions
+
+### bytes32ToUint256
+
+▸ **bytes32ToUint256**(`value`): `bigint`
+
+Parameters
+
+| Name    | Type             |
+| :------ | :--------------- |
+| `value` | \`0x$\{string}\` |
+
+Returns
+
+`bigint`
+
+---
+
+### calculateUnderlyingTokenBalances
+
+▸ **calculateUnderlyingTokenBalances**(`liquidity`, `tickLower`, `tickUpper`, `tickCurrent`): `Object`
+
+Parameters
+
+| Name          | Type     |
+| :------------ | :------- |
+| `liquidity`   | `bigint` |
+| `tickLower`   | `number` |
+| `tickUpper`   | `number` |
+| `tickCurrent` | `number` |
+
+Returns
+
+`Object`
+
+| Name      | Type     |
+| :-------- | :------- |
+| `amount0` | `bigint` |
+| `amount1` | `bigint` |
+
+---
+
+### createDrift
+
+▸ **createDrift**(`params`): `Drift`
+
+Creates a read-only Drift instance with only public client
+
+Parameters
+
+| Name     | Type                                            | Description                       |
+| :------- | :---------------------------------------------- | :-------------------------------- |
+| `params` | `Omit`\<`CreateDriftParams`, `"walletClient"`\> | Parameters with only publicClient |
+
+Returns
+
+`Drift`
+
+Drift instance for read-only operations
+
+**`Throws`**
+
+Error if publicClient.chain is not configured
+
+▸ **createDrift**(`params`): `Drift`\<`ReadWriteAdapter`\>
+
+Creates a read-write Drift instance with both public and wallet clients
+
+Parameters
+
+| Name     | Type                              | Description                                        |
+| :------- | :-------------------------------- | :------------------------------------------------- |
+| `params` | `Required`\<`CreateDriftParams`\> | Parameters with both publicClient and walletClient |
+
+Returns
+
+`Drift`\<`ReadWriteAdapter`\>
+
+Drift instance for read and write operations
+
+**`Throws`**
+
+Error if publicClient.chain is not configured
+
+---
+
+### createFlaunch
+
+▸ **createFlaunch**(`params`): `ReadFlaunchSDK`
+
+Creates a read-only Flaunch SDK instance with only public client
+
+Parameters
+
+| Name     | Type                                              | Description                       |
+| :------- | :------------------------------------------------ | :-------------------------------- |
+| `params` | `Omit`\<`CreateFlaunchParams`, `"walletClient"`\> | Parameters with only publicClient |
+
+Returns
+
+`ReadFlaunchSDK`
+
+ReadFlaunchSDK for read-only operations
+
+**`Throws`**
+
+Error if publicClient.chain is not configured
+
+▸ **createFlaunch**(`params`): `ReadWriteFlaunchSDK`
+
+Creates a read-write Flaunch SDK instance with both public and wallet clients
+
+Parameters
+
+| Name     | Type                                | Description                                        |
+| :------- | :---------------------------------- | :------------------------------------------------- |
+| `params` | `Required`\<`CreateFlaunchParams`\> | Parameters with both publicClient and walletClient |
+
+Returns
+
+`ReadWriteFlaunchSDK`
+
+ReadWriteFlaunchSDK for read and write operations
+
+**`Throws`**
+
+Error if publicClient.chain is not configured
+
+---
+
+### ethToMemecoin
+
+▸ **ethToMemecoin**(`params`): `Object`
+
+Parameters
+
+| Name                            | Type                          |
+| :------------------------------ | :---------------------------- |
+| `params`                        | `Object`                      |
+| `params.amountIn?`              | `bigint`                      |
+| `params.amountInMax?`           | `bigint`                      |
+| `params.amountOut?`             | `bigint`                      |
+| `params.amountOutMin?`          | `bigint`                      |
+| `params.chainId`                | `number`                      |
+| `params.memecoin`               | \`0x$\{string}\`              |
+| `params.positionManagerAddress` | \`0x$\{string}\`              |
+| `params.referrer`               | `null` \| \`0x$\{string}\`    |
+| `params.sender`                 | \`0x$\{string}\`              |
+| `params.swapType`               | `"EXACT_IN"` \| `"EXACT_OUT"` |
+
+Returns
+
+`Object`
+
+| Name       | Type               |
+| :--------- | :----------------- |
+| `calldata` | \`0x$\{string}\`   |
+| `commands` | \`0x$\{string}\`   |
+| `inputs`   | \`0x$\{string}\`[] |
+
+---
+
+### generateTokenUri
+
+▸ **generateTokenUri**(`name`, `params`): `Promise`\<`string`\>
+
+Parameters
+
+| Name     | Type         |
+| :------- | :----------- |
+| `name`   | `string`     |
+| `params` | `IPFSParams` |
+
+Returns
+
+`Promise`\<`string`\>
+
+---
+
+### getAmountWithSlippage
+
+▸ **getAmountWithSlippage**(`amount`, `slippage`, `swapType`): `bigint`
+
+Parameters
+
+| Name       | Type                          |
+| :--------- | :---------------------------- |
+| `amount`   | `undefined` \| `bigint`       |
+| `slippage` | `string`                      |
+| `swapType` | `"EXACT_IN"` \| `"EXACT_OUT"` |
+
+Returns
+
+`bigint`
+
+**`Dev`**
+
+EXACT_OUT adds the slippage, EXACT_IN removes it
+
+---
+
+### getPermit2TypedData
+
+▸ **getPermit2TypedData**(`«destructured»`): `Object`
+
+Parameters
+
+| Name             | Type             |
+| :--------------- | :--------------- |
+| `«destructured»` | `Object`         |
+| › `chainId`      | `number`         |
+| › `coinAddress`  | \`0x$\{string}\` |
+| › `deadline?`    | `bigint`         |
+| › `nonce`        | `number`         |
+
+Returns
+
+`Object`
+
+| Name                                 | Type                                                                                                                                                                                                                                                                                                                                                                |
+| :----------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `permitSingle`                       | `PermitSingle`                                                                                                                                                                                                                                                                                                                                                      |
+| `typedData`                          | \{ `domain`: \{ `chainId`: `number` ; `name`: `string` ; `verifyingContract`: \`0x$\{string}\` } ; `message`: `PermitSingle` ; `primaryType`: `string` ; `types`: \{ `PermitDetails`: \{ `name`: `string` = "token"; `type`: `string` = "address" }[] = PERMIT_DETAILS; `PermitSingle`: \{ `name`: `string` = "details"; `type`: `string` = "PermitDetails" }[] } } |
+| `typedData.domain`                   | \{ `chainId`: `number` ; `name`: `string` ; `verifyingContract`: \`0x$\{string}\` }                                                                                                                                                                                                                                                                                 |
+| `typedData.domain.chainId`           | `number`                                                                                                                                                                                                                                                                                                                                                            |
+| `typedData.domain.name`              | `string`                                                                                                                                                                                                                                                                                                                                                            |
+| `typedData.domain.verifyingContract` | \`0x$\{string}\`                                                                                                                                                                                                                                                                                                                                                    |
+| `typedData.message`                  | `PermitSingle`                                                                                                                                                                                                                                                                                                                                                      |
+| `typedData.primaryType`              | `string`                                                                                                                                                                                                                                                                                                                                                            |
+| `typedData.types`                    | \{ `PermitDetails`: \{ `name`: `string` = "token"; `type`: `string` = "address" }[] = PERMIT_DETAILS; `PermitSingle`: \{ `name`: `string` = "details"; `type`: `string` = "PermitDetails" }[] }                                                                                                                                                                     |
+| `typedData.types.PermitDetails`      | \{ `name`: `string` = "token"; `type`: `string` = "address" }[]                                                                                                                                                                                                                                                                                                     |
+| `typedData.types.PermitSingle`       | \{ `name`: `string` = "details"; `type`: `string` = "PermitDetails" }[]                                                                                                                                                                                                                                                                                             |
+
+---
+
+### getPoolId
+
+▸ **getPoolId**(`poolKey`): \`0x$\{string}\`
+
+Parameters
+
+| Name      | Type      |
+| :-------- | :-------- |
+| `poolKey` | `PoolKey` |
+
+Returns
+
+\`0x$\{string}\`
+
+---
+
+### getSqrtPriceX96FromTick
+
+▸ **getSqrtPriceX96FromTick**(`tick`): `bigint`
+
+Parameters
+
+| Name   | Type     |
+| :----- | :------- |
+| `tick` | `number` |
+
+Returns
+
+`bigint`
+
+---
+
+### getValidTick
+
+▸ **getValidTick**(`«destructured»`): `number`
+
+Parameters
+
+| Name             | Type      |
+| :--------------- | :-------- |
+| `«destructured»` | `Object`  |
+| › `roundDown`    | `boolean` |
+| › `tick`         | `number`  |
+| › `tickSpacing`  | `number`  |
+
+Returns
+
+`number`
+
+---
+
+### memecoinToEthWithPermit2
+
+▸ **memecoinToEthWithPermit2**(`params`): `Object`
+
+Parameters
+
+| Name                            | Type                            |
+| :------------------------------ | :------------------------------ |
+| `params`                        | `Object`                        |
+| `params.amountIn`               | `bigint`                        |
+| `params.chainId`                | `number`                        |
+| `params.ethOutMin`              | `bigint`                        |
+| `params.memecoin`               | \`0x$\{string}\`                |
+| `params.permitSingle`           | `undefined` \| `PermitSingle`   |
+| `params.positionManagerAddress` | \`0x$\{string}\`                |
+| `params.referrer`               | `null` \| \`0x$\{string}\`      |
+| `params.signature`              | `undefined` \| \`0x$\{string}\` |
+
+Returns
+
+`Object`
+
+| Name       | Type               |
+| :--------- | :----------------- |
+| `calldata` | \`0x$\{string}\`   |
+| `commands` | \`0x$\{string}\`   |
+| `inputs`   | \`0x$\{string}\`[] |
+
+---
+
+### orderPoolKey
+
+▸ **orderPoolKey**(`poolKey`): `Object`
+
+Parameters
+
+| Name      | Type      |
+| :-------- | :-------- |
+| `poolKey` | `PoolKey` |
+
+Returns
+
+`Object`
+
+| Name          | Type             |
+| :------------ | :--------------- |
+| `currency0`   | \`0x$\{string}\` |
+| `currency1`   | \`0x$\{string}\` |
+| `fee`         | `number`         |
+| `hooks`       | \`0x$\{string}\` |
+| `tickSpacing` | `number`         |
+
+---
+
+### parseSwapData
+
+▸ **parseSwapData**(`args`, `flETHIsCurrencyZero`): `ParsedSwapData`
+
+Parses raw swap log arguments into structured swap data
+
+Parameters
+
+| Name                  | Type          | Description                             |
+| :-------------------- | :------------ | :-------------------------------------- |
+| `args`                | `SwapLogArgs` | The swap log arguments                  |
+| `flETHIsCurrencyZero` | `boolean`     | Whether flETH is currency 0 in the pool |
+
+Returns
+
+`ParsedSwapData`
+
+Parsed swap data with type and delta information
+
+---
+
+### resolveIPFS
+
+▸ **resolveIPFS**(`value`): `string`
+
+Parameters
+
+| Name    | Type     |
+| :------ | :------- |
+| `value` | `string` |
+
+Returns
+
+`string`
+
+---
+
+### uint256ToBytes32
+
+▸ **uint256ToBytes32**(`value`): \`0x$\{string}\`
+
+Parameters
+
+| Name    | Type     |
+| :------ | :------- |
+| `value` | `bigint` |
+
+Returns
+
+\`0x$\{string}\`
+
+---
+
+### uploadFileToIPFS
+
+▸ **uploadFileToIPFS**(`params`): `Promise`\<`UploadResponse`\>
+
+Uploads a file to IPFS using Pinata
+
+Parameters
+
+| Name                  | Type                           | Description                 |
+| :-------------------- | :----------------------------- | :-------------------------- |
+| `params`              | `Object`                       | Configuration and file data |
+| `params.file`         | `File`                         | -                           |
+| `params.metadata?`    | `Record`\<`string`, `string`\> | -                           |
+| `params.name?`        | `string`                       | -                           |
+| `params.pinataConfig` | `PinataConfig`                 | -                           |
+
+Returns
+
+`Promise`\<`UploadResponse`\>
+
+Upload response with CID and other details
+
+---
+
+### uploadImageToIPFS
+
+▸ **uploadImageToIPFS**(`params`): `Promise`\<`UploadResponse`\>
+
+Uploads a base64 image to IPFS using Pinata
+
+Parameters
+
+| Name                  | Type                           | Description                         |
+| :-------------------- | :----------------------------- | :---------------------------------- |
+| `params`              | `Object`                       | Configuration and base64 image data |
+| `params.base64Image`  | `string`                       | -                                   |
+| `params.metadata?`    | `Record`\<`string`, `string`\> | -                                   |
+| `params.name?`        | `string`                       | -                                   |
+| `params.pinataConfig` | `PinataConfig`                 | -                                   |
+
+Returns
+
+`Promise`\<`UploadResponse`\>
+
+Upload response with CID and other details
+
+---
+
+### uploadJsonToIPFS
+
+▸ **uploadJsonToIPFS**(`params`): `Promise`\<`UploadResponse`\>
+
+Uploads JSON data to IPFS using Pinata
+
+Parameters
+
+| Name                  | Type                           | Description                 |
+| :-------------------- | :----------------------------- | :-------------------------- |
+| `params`              | `Object`                       | Configuration and JSON data |
+| `params.json`         | `Record`\<`string`, `any`\>    | -                           |
+| `params.metadata?`    | `Record`\<`string`, `string`\> | -                           |
+| `params.name?`        | `string`                       | -                           |
+| `params.pinataConfig` | `PinataConfig`                 | -                           |
+
+Returns
+
+`Promise`\<`UploadResponse`\>
+
+Upload response with CID and other details
+
+---
